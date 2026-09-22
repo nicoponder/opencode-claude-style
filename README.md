@@ -1,5 +1,9 @@
 # opencode-claude-style
 
+## Disclaimer: This is entirely vibe-coded
+This isn't representative of my work as an engineer and certainly isn't something I'll be maintaining for others' usage or taking PRs on-- please just fork it if you'd like something for the community. I threw this together in an afternoon because my workplace switched to Codex from Claude, and don't care for the default behavior or styling of Codex and OpenCode. This is public mostly so that I can easily install it where it's necessary.
+
+## Description
 A cosmetic theme and TUI plugin that makes [OpenCode](https://opencode.ai) look
 like Claude Code, so it feels familiar if you're used to Claude Code.
 
