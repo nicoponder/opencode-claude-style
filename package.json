@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "opencode-claude-style",
+  "version": "0.1.0",
+  "description": "A cosmetic OpenCode theme + TUI plugin that makes OpenCode look like Claude Code: colors, Clawd, the welcome banner, and prompt styling.",
+  "type": "module",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "opencode-theme",
+    "claude-code",
+    "tui"
+  ],
+  "exports": {
+    "./tui": "./src/tui.tsx",
+    "./server": "./src/server.ts"
+  },
+  "oc-themes": [
+    "themes/claude-code.json"
+  ],
+  "files": [
+    "src",
+    "themes",
+    "scripts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "preview": "./scripts/preview.sh"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.18.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.32",
+    "@opentui/core": "^0.4.5",
+    "@opentui/keymap": "^0.4.5",
+    "@opentui/solid": "^0.4.5",
+    "@types/bun": "^1.4.2",
+    "@types/node": "^22.0.0",
+    "solid-js": "^1.9.0",
+    "typescript": "^5.6.0"
+  }
+}
