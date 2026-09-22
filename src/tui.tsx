@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
 import { HomePrompt, SessionPrompt } from "./prompt"
+import { registerExpandKey } from "./transcript"
 import { Welcome } from "./welcome"
 
 export const THEME = "claude-code"
@@ -15,10 +16,23 @@ export type Options = {
    */
   prompt?: boolean
   /**
-   * Show a "✻ Pondering… (12s)" line above the prompt while a session is busy, then
-   * "✻ Thought for 12s" once the turn is done. Default: true.
+   * Show a "✻ Pondering… (12s · ↓ 1.2k tokens)" line and a tip above the prompt
+   * while a session is busy. Default: true.
    */
   spinner?: boolean
+  /**
+   * Restyle the session transcript like Claude Code's: `❯` before your messages,
+   * `⏺` before replies, runs of reads, searches, and shell commands folded into
+   * one line (ctrl+o expands them), and "✻ Thought for 12s · done 4:00 PM" in
+   * place of OpenCode's agent and model line after each reply. Default: true.
+   */
+  transcript?: boolean
+  /**
+   * Show the session's usage under the prompt as "14.9k | ctx 25% | 5h: 48% |
+   * 7d: 6%". The 5h and 7d parts appear for a ChatGPT Plus/Pro or Claude Pro/Max
+   * login, and are fetched from that provider. Default: true.
+   */
+  usage?: boolean
   /** Name for "Welcome back <name>!". Defaults to config.username, then the OS user. */
   name?: string
   /**
@@ -34,6 +48,8 @@ function readOptions(raw: unknown): Required<Omit<Options, "name">> & Pick<Optio
     banner: opts.banner !== false,
     prompt: opts.prompt !== false,
     spinner: opts.spinner !== false,
+    transcript: opts.transcript !== false,
+    usage: opts.usage !== false,
     activateTheme: opts.activateTheme !== false,
     name: typeof opts.name === "string" && opts.name.trim() ? opts.name.trim() : undefined,
   }
@@ -45,6 +61,8 @@ const tui: TuiPlugin = async (api, rawOptions, meta) => {
   if (options.activateTheme && meta.state === "first" && !api.tuiConfig.theme && api.theme.has(THEME)) {
     api.theme.set(THEME)
   }
+
+  if (options.transcript) api.lifecycle.onDispose(registerExpandKey(api))
 
   api.slots.register({
     order: 50,
@@ -64,13 +82,15 @@ const tui: TuiPlugin = async (api, rawOptions, meta) => {
           return <HomePrompt api={api} ref={props.ref} />
         },
       }),
-      ...((options.prompt || options.spinner) && {
+      ...((options.prompt || options.spinner || options.transcript || options.usage) && {
         session_prompt(_ctx, props) {
           return (
             <SessionPrompt
               api={api}
               spinner={options.spinner}
               restyle={options.prompt}
+              transcript={options.transcript}
+              usage={options.usage}
               session_id={props.session_id}
               visible={props.visible}
               disabled={props.disabled}

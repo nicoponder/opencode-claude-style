@@ -3,8 +3,11 @@ import type { Renderable, TuiPluginApi, TuiPromptRef } from "@opencode-ai/plugin
 import type { RGBA, TextBufferRenderable } from "@opentui/core"
 import { type JSX, useTerminalDimensions } from "@opentui/solid"
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js"
-import { formatDuration, lastTurn, modeLabel } from "./format"
-import { claude, pick, spinnerFrames, spinnerVerbs } from "./palette"
+import { formatClock, formatDuration, formatTokens, lastTurn, modeLabel, turnProgress, type TurnPart } from "./format"
+import { claude, pick, spinnerFrames, spinnerVerbs, tips } from "./palette"
+import { useTranscript } from "./transcript"
+import { useUsageLine } from "./usage"
+import { blankBar, find } from "./tree"
 
 /** Left and right padding OpenCode puts around both the home screen and the session column. */
 export const GUTTER = 2
@@ -95,7 +98,12 @@ function Restyled(props: {
   anchor?: boolean
   visible?: boolean
   right: JSX.Element
-  children: (hint: JSX.Element) => JSX.Element
+  /**
+   * Renders the prompt, given a function that makes the mode line to pass as its
+   * hint. OpenCode swaps the hint out for "esc interrupt" while a turn runs and
+   * destroys it, so it has to get a new one each time it shows it again.
+   */
+  children: (hint: () => JSX.Element) => JSX.Element
 }) {
   const theme = () => props.api.theme.current
   const ruled = () => props.visible !== false && theme().backgroundElement.a === 0
@@ -146,7 +154,7 @@ function Restyled(props: {
       <Show when={ruled()}>
         <box height={1} marginLeft={edge()} marginRight={edge()} border={["top"]} borderColor={theme().border} />
       </Show>
-      {props.children(<ModeLine api={props.api} mode={mode()} right={props.right} />)}
+      {props.children(() => <ModeLine api={props.api} mode={mode()} right={props.right} />)}
       <Show when={marker() && props.visible !== false && mode()}>
         {(m) => (
           <box position="absolute" top={ruled() ? 1 : 0} left={0} zIndex={1}>
@@ -170,26 +178,6 @@ function Restyled(props: {
       </Show>
     </box>
   )
-}
-
-/**
- * Blank the colored bar OpenCode draws left of the input (the box's left border).
- * The prompt re-applies the bar's characters every time it re-renders, such as
- * when the placeholder rotates, so pin them on this one box. Turning the border
- * off instead doesn't stick: setting a border color turns it back on.
- */
-function blankBar(bar: Renderable) {
-  const current = (bar as { customBorderChars?: Record<string, string> }).customBorderChars
-  let proto = Object.getPrototypeOf(bar)
-  let setter: ((value: unknown) => void) | undefined
-  while (proto && !(setter = Object.getOwnPropertyDescriptor(proto, "customBorderChars")?.set)) {
-    proto = Object.getPrototypeOf(proto)
-  }
-  if (!current || !setter) return false
-  const blank = { ...current, vertical: " ", bottomLeft: " " }
-  setter.call(bar, blank)
-  Object.defineProperty(bar, "customBorderChars", { configurable: true, get: () => blank, set: () => {} })
-  return true
 }
 
 /**
@@ -227,15 +215,6 @@ function agentRow(root: Renderable): Renderable | undefined {
   return row && row.getChildrenCount() > 0 ? row : undefined
 }
 
-function find(node: Renderable, match: (node: Renderable) => boolean, depth = 0): Renderable | undefined {
-  if (match(node)) return node
-  if (depth >= 6) return
-  for (const child of node.getChildren()) {
-    const hit = find(child, match, depth + 1)
-    if (hit) return hit
-  }
-}
-
 export function HomePrompt(props: { api: TuiPluginApi; ref?: (ref: TuiPromptRef | undefined) => void }) {
   const Prompt = props.api.ui.Prompt
   const Slot = props.api.ui.Slot
@@ -244,7 +223,7 @@ export function HomePrompt(props: { api: TuiPluginApi; ref?: (ref: TuiPromptRef 
   const fullWidth = configuredMaxWidth(props.api) === undefined
   return (
     <Restyled api={props.api} bleed={fullWidth} uncap={fullWidth} anchor right={<Slot name="home_prompt_right" />}>
-      {(hint) => <Prompt ref={(r) => props.ref?.(r)} placeholders={placeholders} hint={hint} />}
+      {(hint) => <Prompt ref={(r) => props.ref?.(r)} placeholders={placeholders} hint={hint()} />}
     </Restyled>
   )
 }
@@ -264,6 +243,8 @@ export function SessionPrompt(props: {
   api: TuiPluginApi
   spinner: boolean
   restyle: boolean
+  transcript: boolean
+  usage: boolean
   session_id: string
   visible?: boolean
   disabled?: boolean
@@ -273,7 +254,10 @@ export function SessionPrompt(props: {
   const Prompt = props.api.ui.Prompt
   const Slot = props.api.ui.Slot
   const right = () => <Slot name="session_prompt_right" session_id={props.session_id} />
-  const prompt = (extra: { hint?: JSX.Element; right?: JSX.Element }) => (
+  let box: Renderable | undefined
+  if (props.transcript) useTranscript(props.api, () => props.session_id, () => box)
+  if (props.usage) useUsageLine(props.api, () => props.session_id, () => box)
+  const prompt = (extra: { hint?: () => JSX.Element; right?: JSX.Element }) => (
     <Prompt
       sessionID={props.session_id}
       visible={props.visible}
@@ -281,14 +265,14 @@ export function SessionPrompt(props: {
       onSubmit={() => props.on_submit?.()}
       ref={(r) => props.ref?.(r)}
       placeholders={props.restyle ? placeholders : undefined}
-      hint={extra.hint}
+      hint={extra.hint?.()}
       right={extra.right}
     />
   )
   return (
-    <box flexDirection="column" width="100%">
+    <box flexDirection="column" width="100%" ref={(r: Renderable) => (box = r)}>
       <Show when={props.spinner && props.visible !== false}>
-        <Status api={props.api} sessionID={props.session_id} />
+        <Status api={props.api} sessionID={props.session_id} inline={props.transcript} />
       </Show>
       <Show when={props.restyle} fallback={prompt({ right: right() })}>
         <Restyled api={props.api} visible={props.visible} bleed={true} right={right()}>
@@ -300,25 +284,26 @@ export function SessionPrompt(props: {
 }
 
 /**
- * The line above the prompt: Claude Code's spinner while the session is busy, then
- * "✻ Thought for 12s" once the turn has finished.
+ * The lines above the prompt: Claude Code's spinner while the session is busy.
+ * Once the turn has finished, "✻ Thought for 12s · done 4:00 PM", unless the
+ * transcript already shows that after the reply (`inline`).
  */
-function Status(props: { api: TuiPluginApi; sessionID: string }) {
+function Status(props: { api: TuiPluginApi; sessionID: string; inline: boolean }) {
   const theme = () => props.api.theme.current
   const busy = createMemo(() => {
     const status = props.api.state.session.status(props.sessionID)
     return !!status && status.type !== "idle"
   })
   const thought = createMemo(() => {
-    if (busy()) return
+    if (busy() || props.inline) return
     const turn = lastTurn(props.api.state.session.messages(props.sessionID))
     if (!turn?.end || turn.failed) return
-    return formatDuration(turn.end - turn.start)
+    return `${formatDuration(turn.end - turn.start)} · done ${formatClock(turn.end)}`
   })
   return (
     <Switch>
       <Match when={busy()}>
-        <Spinner api={props.api} />
+        <Spinner api={props.api} sessionID={props.sessionID} />
       </Match>
       <Match when={thought()}>
         <box flexDirection="row" paddingBottom={1} flexShrink={0}>
@@ -332,21 +317,33 @@ function Status(props: { api: TuiPluginApi; sessionID: string }) {
 }
 
 /**
- * Claude Code's "✻ Pondering… (12s)" status line, shown above the prompt while the
- * session is busy. Purely decorative: the glyph cycles, the verb shimmers.
+ * Claude Code's status line while the session is busy:
+ * "✻ Pondering… (12s · ↓ 1.2k tokens · thinking)", timed from your message, with
+ * a tip underneath. The glyph cycles and the verb shimmers.
  */
-function Spinner(props: { api: TuiPluginApi }) {
+function Spinner(props: { api: TuiPluginApi; sessionID: string }) {
   const theme = () => props.api.theme.current
   const [tick, setTick] = createSignal(0)
-  const started = Date.now()
+  const mounted = Date.now()
   const verb = randomVerb()
+  const tip = tips[Math.floor(Math.random() * tips.length)]
   const timer = setInterval(() => setTick((t) => t + 1), 120)
   onCleanup(() => clearInterval(timer))
 
+  const progress = createMemo(() =>
+    turnProgress(props.api.state.session.messages(props.sessionID), (id) => props.api.state.part(id) as ReadonlyArray<TurnPart>),
+  )
   const glyph = () => spinnerFrames[tick() % spinnerFrames.length]
-  const elapsed = () => {
+  const details = () => {
     tick()
-    return formatDuration(Date.now() - started)
+    const p = progress()
+    return [
+      formatDuration(Date.now() - (p?.start ?? mounted)),
+      p?.tokens ? `↓ ${formatTokens(p.tokens)}` : undefined,
+      p?.thinking ? "thinking" : undefined,
+    ]
+      .filter(Boolean)
+      .join(" · ")
   }
   const shimmer = () => pick(claude.shimmer, props.api.theme.mode())
   const label = () => `${verb}…`
@@ -354,13 +351,17 @@ function Spinner(props: { api: TuiPluginApi }) {
   const sweep = () => (tick() % (label().length + 8)) - 2
 
   return (
-    <box flexDirection="row" paddingBottom={1} flexShrink={0}>
+    <box flexDirection="column" paddingBottom={1} flexShrink={0}>
       <text wrapMode="none" selectable={false}>
         <span style={{ fg: claude.body }}>{glyph()} </span>
         <For each={Array.from(label())}>
           {(char, i) => <span style={{ fg: Math.abs(i() - sweep()) <= 1 ? shimmer() : claude.body }}>{char}</span>}
         </For>
-        <span style={{ fg: theme().textMuted }}> ({elapsed()})</span>
+        <span style={{ fg: theme().textMuted }}> ({details()})</span>
+      </text>
+      <text fg={theme().textMuted} wrapMode="none" selectable={false}>
+        {"  ⎿  Tip: "}
+        {tip}
       </text>
     </box>
   )

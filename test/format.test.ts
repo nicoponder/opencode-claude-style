@@ -5,15 +5,22 @@ import path from "node:path"
 import {
   abbreviateHome,
   describeModel,
+  formatClock,
   formatDuration,
+  formatTokens,
   lastTurn,
   modeLabel,
   readRecentModels,
   relativeTime,
+  summarizeTools,
   truncateEnd,
   truncateStart,
+  turnOf,
+  turnProgress,
   type ProviderInfo,
   type TurnMessage,
+  type ToolKind,
+  type TurnPart,
 } from "../src/format"
 
 const providers: ProviderInfo[] = [
@@ -144,7 +151,7 @@ describe("lastTurn", () => {
       reply("a2", "u2", 101, 110),
       reply("a3", "u2", 110, 142),
     ])
-    expect(turn).toEqual({ start: 100, end: 142, failed: false })
+    expect(turn).toEqual({ start: 100, end: 142, failed: false, interrupted: false })
   })
 
   test("has no end while a reply is still running or none has started", () => {
@@ -153,11 +160,96 @@ describe("lastTurn", () => {
   })
 
   test("flags errored or interrupted turns", () => {
-    expect(lastTurn([user("u1", 0), reply("a1", "u1", 1, 5, "MessageAbortedError")])?.failed).toBe(true)
+    expect(lastTurn([user("u1", 0), reply("a1", "u1", 1, 5, "MessageAbortedError")])).toMatchObject({
+      failed: true,
+      interrupted: true,
+    })
+    expect(lastTurn([user("u1", 0), reply("a1", "u1", 1, 5, "APIError")])).toMatchObject({
+      failed: true,
+      interrupted: false,
+    })
   })
 
   test("returns undefined for an empty session", () => {
     expect(lastTurn([])).toBeUndefined()
+  })
+})
+
+describe("turnOf", () => {
+  test("describes an earlier turn, not just the latest", () => {
+    const u1: TurnMessage = { id: "u1", role: "user", time: { created: 0 } }
+    const messages: TurnMessage[] = [
+      u1,
+      { id: "a1", role: "assistant", parentID: "u1", time: { created: 1, completed: 9 } },
+      { id: "u2", role: "user", time: { created: 20 } },
+    ]
+    expect(turnOf(messages, u1)).toEqual({ start: 0, end: 9, failed: false, interrupted: false })
+  })
+})
+
+describe("turnProgress", () => {
+  const messages: TurnMessage[] = [
+    { id: "u1", role: "user", time: { created: 50 } },
+    { id: "a1", role: "assistant", parentID: "u1", time: { created: 51, completed: 60 }, tokens: { output: 300, reasoning: 100 } },
+    { id: "a2", role: "assistant", parentID: "u1", time: { created: 60 }, tokens: { output: 0, reasoning: 0 } },
+  ]
+
+  test("counts finished steps and estimates the one in progress", () => {
+    const parts: Record<string, TurnPart[]> = {
+      a1: [{ type: "text", text: "ignored, already counted" }],
+      a2: [
+        { type: "text", text: "x".repeat(40) },
+        { type: "tool", state: { input: { command: "ls" } } },
+      ],
+    }
+    const progress = turnProgress(messages, (id) => parts[id] ?? [])
+    // 400 counted, plus (40 + 16 characters of tool input) / 4.
+    expect(progress).toEqual({ start: 50, tokens: 414, thinking: false })
+  })
+
+  test("is thinking while the latest part is unfinished reasoning", () => {
+    const parts: Record<string, TurnPart[]> = { a2: [{ type: "reasoning", text: "hmm", time: { start: 61 } }] }
+    expect(turnProgress(messages, (id) => parts[id] ?? [])?.thinking).toBe(true)
+    parts.a2[0].time!.end = 70
+    expect(turnProgress(messages, (id) => parts[id] ?? [])?.thinking).toBe(false)
+  })
+
+  test("returns undefined before any message", () => {
+    expect(turnProgress([], () => [])).toBeUndefined()
+  })
+})
+
+describe("formatTokens", () => {
+  test("uses k above a thousand, like Claude Code", () => {
+    expect(formatTokens(1)).toBe("1 token")
+    expect(formatTokens(345)).toBe("345 tokens")
+    expect(formatTokens(1000)).toBe("1k tokens")
+    expect(formatTokens(1234)).toBe("1.2k tokens")
+    expect(formatTokens(12_345)).toBe("12.3k tokens")
+  })
+})
+
+describe("formatClock", () => {
+  test("prints hours and minutes", () => {
+    const at = new Date(2026, 0, 1, 16, 0).getTime()
+    expect(formatClock(at, "en-US")).toBe("4:00 PM")
+  })
+})
+
+describe("summarizeTools", () => {
+  const done = (...kinds: ToolKind[]) => kinds.map((kind) => ({ kind, active: false }))
+
+  test("counts each kind in the order it first appears", () => {
+    expect(summarizeTools(done("read", "bash", "read"))).toBe("Read 2 files, ran 1 shell command")
+    expect(summarizeTools(done("bash"))).toBe("Ran 1 shell command")
+    expect(summarizeTools(done("search", "search", "fetch"))).toBe("Searched for 2 patterns, fetched 1 URL")
+  })
+
+  test("uses the present tense for kinds still in progress", () => {
+    expect(summarizeTools([...done("read"), { kind: "bash", active: true }])).toBe(
+      "Read 1 file, running 1 shell command…",
+    )
+    expect(summarizeTools([{ kind: "read", active: true }, ...done("read")])).toBe("Reading 2 files…")
   })
 })
 

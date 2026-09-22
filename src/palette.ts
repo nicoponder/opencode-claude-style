@@ -73,3 +73,30 @@ export const spinnerVerbs = [
   "Vibing",
   "Working",
 ]
+
+/**
+ * Tips shown under the spinner while a turn runs, as Claude Code does. They're
+ * taken from OpenCode's own startup tips, so they describe OpenCode, not Claude Code.
+ */
+export const tips = [
+  "Type @ followed by a filename to fuzzy search and attach files",
+  "Start a message with ! to run shell commands (e.g., !ls -la)",
+  "Use /undo to revert the last message and file changes",
+  "Use /redo to restore previously undone messages and file changes",
+  "Drag and drop images or PDFs into the terminal as context",
+  "Use /editor to compose messages in your external editor",
+  "Run /init to auto-generate project rules based on your codebase",
+  "Use /models to switch between available AI models",
+  "Use /new to start a fresh conversation session",
+  "Use /sessions to list, pin, and continue sessions",
+  "Run /compact to summarize long sessions near context limits",
+  "Use /export to save the conversation as Markdown",
+  "Switch to Plan agent for suggestions without making changes",
+  "Use @agent-name in prompts to invoke specialized subagents",
+  "Override any keybind in tui.json via the keybinds section",
+  "Add .md files to .opencode/commands/ for reusable prompts",
+  "Add .md files to .opencode/agents/ for specialized AI personas",
+  "Use /timeline to jump to specific messages",
+  "Use /review to review uncommitted changes, branches, or PRs",
+  "Press ctrl+o to expand tool calls and thinking",
+]
