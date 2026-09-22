@@ -45,13 +45,72 @@ export function textOf(node: Renderable | undefined) {
   return typeof text === "string" ? text : undefined
 }
 
-/** The first text found in a subtree, depth first. */
+/** The first text found in a subtree, depth first, skipping spinners' glyphs. */
 export function firstText(node: Renderable, depth = 0): string | undefined {
+  if (node.id.startsWith("spinner")) return
   const own = textOf(node)
   if (own !== undefined) return own
   if (depth >= 4) return
   for (const child of drawn(node)) {
     const text = firstText(child, depth + 1)
     if (text !== undefined) return text
+  }
+}
+
+/**
+ * Route every assignment to `node[key]` through `write`, which gets the value and
+ * the original setter to pass it on with (or not). Reads still go to the original
+ * getter, so they return what's actually applied. False if there's no setter.
+ */
+export function interceptSetter<T>(node: object, key: string, write: (value: T, set: (value: T) => void) => void) {
+  let proto = Object.getPrototypeOf(node)
+  let descriptor: PropertyDescriptor | undefined
+  while (proto && !(descriptor = Object.getOwnPropertyDescriptor(proto, key))?.set) proto = Object.getPrototypeOf(proto)
+  const original = descriptor
+  if (!original?.set) return false
+  const set = (value: T) => original.set!.call(node, value)
+  Object.defineProperty(node, key, {
+    configurable: true,
+    get: () => original.get?.call(node),
+    set: (value: T) => write(value, set),
+  })
+  return true
+}
+
+const beforeRender = new Set<() => void>()
+let unpatch: (() => void) | undefined
+
+/**
+ * Run `fn` synchronously just before each frame is laid out and drawn. The
+ * renderer's frame callbacks are awaited, which lets OpenCode's own updates slip
+ * in after them and show for a frame; this runs with nothing in between.
+ * Returns a function that stops it.
+ */
+export function onBeforeRender(root: Renderable, fn: () => void) {
+  beforeRender.add(fn)
+  if (!unpatch) {
+    const target = root as unknown as { render: (...args: unknown[]) => unknown }
+    const original = target.render
+    const patched = function (this: unknown, ...args: unknown[]) {
+      for (const run of beforeRender) {
+        try {
+          run()
+        } catch (error) {
+          console.error("opencode-claude-style: restyle failed", error)
+        }
+      }
+      return original.apply(this, args)
+    }
+    target.render = patched
+    unpatch = () => {
+      if (target.render === patched) target.render = original
+    }
+  }
+  return () => {
+    beforeRender.delete(fn)
+    if (beforeRender.size === 0) {
+      unpatch?.()
+      unpatch = undefined
+    }
   }
 }

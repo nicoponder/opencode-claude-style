@@ -23,7 +23,7 @@ work exactly as before. None of Claude Code's features are copied.
 | **Mode line** | The bottom line, under the prompt: `⏵⏵ build mode on (tab to cycle)` or `⏸ plan mode on (tab to cycle)`, in the agent's color, like Claude Code's `⏸ plan mode on (shift+tab to cycle)`. Other agents get `⏵⏵`, shell mode shows `! shell mode on`, and the key shown is whatever `agent.cycle` is bound to. The model isn't shown, as in Claude Code. |
 | **Spinner line** | While a session is working, shows `✻ Pondering… (12s · ↓ 1.2k tokens · thinking)` above the prompt, timed from your message, with `⎿  Tip: …` underneath. The glyph cycles through `· ✢ ✳ ✶ ✻ ✽`, the verb is picked at random from a whimsical list, and a highlight sweeps across it. `thinking` shows while the model is reasoning. The tips are OpenCode's own. OpenCode's own progress indicator is still there. |
 | **Usage line** | Left of `ctrl+p commands` under the prompt, OpenCode's `15.9K (8%)` becomes `14.9k \| ctx 25% \| 5h: 48% \| 7d: 6%`: the session's tokens, how full the context is, and, when you're signed in with a ChatGPT Plus/Pro or Claude Pro/Max subscription, how much of its 5-hour and 7-day limits you've used. In a narrow terminal it drops the token count, then the cost, the context, and the 7-day limit to fit. |
-| **Transcript** | Your earlier prompts show as `❯ text` on a gray band instead of in a box with a colored bar. Replies start with `⏺`. Runs of reads, searches, shell commands, and web fetches fold into one line, such as `⏺ Read 2 files, ran 1 shell command (ctrl+o to expand)`. While one is running, the line reads `Read 2 files, running 1 shell command…`, its `⏺` blinks, and `⎿  $ npm test` underneath shows what's running. <kbd>ctrl+o</kbd> expands them to OpenCode's full view, with thinking shown, and collapses them again. Thinking shows as `∴ Thought for 2s`. OpenCode's `▣ Build · model · 12s` line after each reply becomes `✻ Thought for 12s · done 4:00 PM`, or `⎿  Interrupted · What should OpenCode do instead?`. |
+| **Transcript** | Your earlier prompts show as `❯ text` on a gray band instead of in a box with a colored bar. Replies start with `⏺`, and while one streams only its finished lines show, so prose arrives a paragraph at a time instead of word by word, as in Claude Code. Runs of reads, searches, shell commands, and web fetches fold into one line. While the run is going, a dim `⏺` blinks beside `Listing 1 directory, running 2 shell commands…` (or the running command's description, if the model gave one), with `⎿  $ npm test` underneath. The line stays put between calls instead of flickering, and each command stays up for at least 0.7s so you can read it. Once the reply moves on, it becomes a dim `Listed 1 directory, ran 2 shell commands`. Shell commands that only list, read, or search (`ls`, `cat`, `grep`, …) count as such, as Claude Code counts them. Thinking is hidden, and the spinner line says when the model is thinking. <kbd>ctrl+o</kbd> expands everything to OpenCode's full view, with thinking shown, and collapses it again. OpenCode's `▣ Build · model · 12s` line after each reply becomes `✻ Worked for 12s · done 4:00 PM` (the verb varies, as in Claude Code), or `⎿  Interrupted · What should OpenCode do instead?`. |
 | **Agent colors** (optional server plugin) | Build uses lavender. Plan uses teal, like Claude Code's plan mode. Without this, OpenCode colors agents by their position in the list, and plan comes out yellow. |
 
 ## Install
@@ -91,8 +91,8 @@ Pass options with OpenCode's `[spec, options]` plugin syntax:
 | --- | --- | --- |
 | `banner` | `true` | Replace the OpenCode logo with the welcome banner and Clawd, and remove OpenCode's home footer (directory and version, which the banner already shows). |
 | `prompt` | `true` | Full-width prompt between rules, Claude Code-style placeholders, and the mode line. |
-| `spinner` | `true` | Show the `✻ Pondering… (12s · ↓ 1.2k tokens)` line and a tip while a session is busy. With `transcript` off, the line becomes `✻ Thought for 12s · done 4:00 PM` once the turn is done. |
-| `transcript` | `true` | Restyle the session transcript: `❯` prompts, `⏺` replies, folded tool calls with <kbd>ctrl+o</kbd> to expand, `∴ Thought for 2s`, and `✻ Thought for 12s · done 4:00 PM` after each reply. |
+| `spinner` | `true` | Show the `✻ Pondering… (12s · ↓ 1.2k tokens)` line and a tip while a session is busy. With `transcript` off, the line becomes `✻ Worked for 12s · done 4:00 PM` once the turn is done. |
+| `transcript` | `true` | Restyle and pace the session transcript: `❯` prompts, `⏺` replies shown a finished line at a time, folded tool calls with <kbd>ctrl+o</kbd> to expand, thinking hidden until <kbd>ctrl+o</kbd>, and `✻ Worked for 12s · done 4:00 PM` after each reply. |
 | `usage` | `true` | Show `14.9k \| ctx 25% \| 5h: 48% \| 7d: 6%` under the prompt. The 5h and 7d parts need a ChatGPT or Claude subscription login (see below). |
 | `name` | `username` from config, then your OS user | The name in "Welcome back *name*!". |
 | `activateTheme` | `true` | Switch to `claude-code` on first load if `tui.json` sets no theme. |
@@ -143,8 +143,9 @@ OpenCode styling:
   changes that layout, those parts stay as OpenCode draws them and the mode line
   stays empty, rather than anything breaking. Hiding the agent row also hides
   the model variant (reasoning effort) and the `auto` permissions tag.
-- The transcript is restyled ten times a second, so a new tool call can show in
-  OpenCode's style for a moment before it folds into the summary line.
+- The transcript is restyled just before each frame is drawn, by hooking into
+  OpenCode's renderer. Reply text is held back by wrapping the markdown's text
+  setter, since OpenCode sets it on every token.
 - Only reads, searches, shell commands, web fetches, web searches, and skills
   fold into summary lines. Edits, writes, subagents, todos, questions, other
   tools, and failed or denied calls keep OpenCode's style, as do all tool calls

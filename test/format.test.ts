@@ -13,13 +13,15 @@ import {
   readRecentModels,
   relativeTime,
   summarizeTools,
+  commandHint,
+  commandKind,
+  turnVerb,
   truncateEnd,
   truncateStart,
   turnOf,
   turnProgress,
   type ProviderInfo,
   type TurnMessage,
-  type ToolKind,
   type TurnPart,
 } from "../src/format"
 
@@ -237,19 +239,44 @@ describe("formatClock", () => {
 })
 
 describe("summarizeTools", () => {
-  const done = (...kinds: ToolKind[]) => kinds.map((kind) => ({ kind, active: false }))
-
   test("counts each kind in the order it first appears", () => {
-    expect(summarizeTools(done("read", "bash", "read"))).toBe("Read 2 files, ran 1 shell command")
-    expect(summarizeTools(done("bash"))).toBe("Ran 1 shell command")
-    expect(summarizeTools(done("search", "search", "fetch"))).toBe("Searched for 2 patterns, fetched 1 URL")
+    expect(summarizeTools(["read", "bash", "read"], false)).toBe("Read 2 files, ran 1 shell command")
+    expect(summarizeTools(["list", "bash"], false)).toBe("Listed 1 directory, ran 1 shell command")
+    expect(summarizeTools(["search", "search", "fetch"], false)).toBe("Searched for 2 patterns, fetched 1 URL")
   })
 
-  test("uses the present tense for kinds still in progress", () => {
-    expect(summarizeTools([...done("read"), { kind: "bash", active: true }])).toBe(
-      "Read 1 file, running 1 shell command…",
-    )
-    expect(summarizeTools([{ kind: "read", active: true }, ...done("read")])).toBe("Reading 2 files…")
+  test("puts the whole run in the present tense while it's going", () => {
+    expect(summarizeTools(["read", "bash"], true)).toBe("Reading 1 file, running 1 shell command…")
+  })
+})
+
+describe("commandKind", () => {
+  test("counts looking-only commands as listing, reading, or searching", () => {
+    expect(commandKind("ls -la")).toBe("list")
+    expect(commandKind("tree src && echo ---")).toBe("list")
+    expect(commandKind("cat package.json | jq .name")).toBe("read")
+    expect(commandKind("grep -rn GUTTER src | head")).toBe("search")
+  })
+
+  test("anything else is a shell command", () => {
+    expect(commandKind("npm test")).toBe("bash")
+    expect(commandKind("ls && rm -rf build")).toBe("bash")
+    expect(commandKind("echo hi")).toBe("bash")
+  })
+})
+
+describe("commandHint", () => {
+  test("collapses whitespace and caps the length", () => {
+    expect(commandHint("  git   status  ")).toBe("$ git status")
+    expect(commandHint("a\n\n  b")).toBe("$ a\nb")
+    expect(commandHint("x".repeat(20), 10)).toBe("$ xxxxxxx…")
+  })
+})
+
+describe("turnVerb", () => {
+  test("is one of Claude Code's verbs, and the same each time for a turn", () => {
+    expect(["Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked"]).toContain(turnVerb("msg_1"))
+    expect(turnVerb("msg_abc")).toBe(turnVerb("msg_abc"))
   })
 })
 

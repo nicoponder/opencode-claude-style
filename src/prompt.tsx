@@ -3,7 +3,7 @@ import type { Renderable, TuiPluginApi, TuiPromptRef } from "@opencode-ai/plugin
 import type { RGBA, TextBufferRenderable } from "@opentui/core"
 import { type JSX, useTerminalDimensions } from "@opentui/solid"
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js"
-import { formatClock, formatDuration, formatTokens, lastTurn, modeLabel, turnProgress, type TurnPart } from "./format"
+import { formatClock, formatDuration, formatTokens, lastTurn, modeLabel, turnProgress, turnVerb, type TurnPart } from "./format"
 import { claude, pick, spinnerFrames, spinnerVerbs, tips } from "./palette"
 import { useTranscript } from "./transcript"
 import { useUsageLine } from "./usage"
@@ -285,7 +285,7 @@ export function SessionPrompt(props: {
 
 /**
  * The lines above the prompt: Claude Code's spinner while the session is busy.
- * Once the turn has finished, "✻ Thought for 12s · done 4:00 PM", unless the
+ * Once the turn has finished, "✻ Worked for 12s · done 4:00 PM", unless the
  * transcript already shows that after the reply (`inline`).
  */
 function Status(props: { api: TuiPluginApi; sessionID: string; inline: boolean }) {
@@ -296,9 +296,11 @@ function Status(props: { api: TuiPluginApi; sessionID: string; inline: boolean }
   })
   const thought = createMemo(() => {
     if (busy() || props.inline) return
-    const turn = lastTurn(props.api.state.session.messages(props.sessionID))
-    if (!turn?.end || turn.failed) return
-    return `${formatDuration(turn.end - turn.start)} · done ${formatClock(turn.end)}`
+    const messages = props.api.state.session.messages(props.sessionID)
+    const turn = lastTurn(messages)
+    const user = [...messages].reverse().find((m) => m.role === "user")
+    if (!turn?.end || turn.failed || !user) return
+    return `${turnVerb(user.id)} for ${formatDuration(turn.end - turn.start)} · done ${formatClock(turn.end)}`
   })
   return (
     <Switch>
@@ -308,7 +310,7 @@ function Status(props: { api: TuiPluginApi; sessionID: string; inline: boolean }
       <Match when={thought()}>
         <box flexDirection="row" paddingBottom={1} flexShrink={0}>
           <text fg={theme().textMuted} wrapMode="none">
-            ✻ Thought for {thought()}
+            ✻ {thought()}
           </text>
         </box>
       </Match>

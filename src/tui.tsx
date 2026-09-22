@@ -21,10 +21,11 @@ export type Options = {
    */
   spinner?: boolean
   /**
-   * Restyle the session transcript like Claude Code's: `❯` before your messages,
-   * `⏺` before replies, runs of reads, searches, and shell commands folded into
-   * one line (ctrl+o expands them), and "✻ Thought for 12s · done 4:00 PM" in
-   * place of OpenCode's agent and model line after each reply. Default: true.
+   * Restyle the session transcript like Claude Code's, and pace it the same way:
+   * `❯` before your messages, `⏺` before replies, replies shown a finished line at
+   * a time, runs of reads, searches, and shell commands folded into one line
+   * (ctrl+o expands them), thinking hidden until ctrl+o, and "✻ Worked for 12s ·
+   * done 4:00 PM" in place of OpenCode's agent and model line. Default: true.
    */
   transcript?: boolean
   /**

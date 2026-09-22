@@ -178,10 +178,11 @@ export function formatTokens(count: number) {
 }
 
 /** The kinds of tool call Claude Code folds into one summary line. */
-export type ToolKind = "bash" | "read" | "search" | "fetch" | "websearch" | "skill"
+export type ToolKind = "bash" | "read" | "list" | "search" | "fetch" | "websearch" | "skill"
 
 const toolWords: Record<ToolKind, { done: string; active: string; one: string; many: string }> = {
   read: { done: "read", active: "reading", one: "file", many: "files" },
+  list: { done: "listed", active: "listing", one: "directory", many: "directories" },
   search: { done: "searched for", active: "searching for", one: "pattern", many: "patterns" },
   bash: { done: "ran", active: "running", one: "shell command", many: "shell commands" },
   fetch: { done: "fetched", active: "fetching", one: "URL", many: "URLs" },
@@ -191,23 +192,59 @@ const toolWords: Record<ToolKind, { done: string; active: string; one: string; m
 
 /**
  * Claude Code's one-line summary of a run of tool calls: "Read 2 files, ran 1 shell
- * command", or "Read 2 files, running 1 shell command…" while a call is still in
- * progress. Kinds are listed in the order they first appear.
+ * command", or "Reading 2 files, running 1 shell command…" while the run is still
+ * going. Kinds are listed in the order they first appear.
  */
-export function summarizeTools(calls: ReadonlyArray<{ kind: ToolKind; active: boolean }>) {
-  const counts = new Map<ToolKind, { n: number; active: boolean }>()
-  for (const call of calls) {
-    const count = counts.get(call.kind) ?? { n: 0, active: false }
-    counts.set(call.kind, { n: count.n + 1, active: count.active || call.active })
-  }
+export function summarizeTools(kinds: ReadonlyArray<ToolKind>, active: boolean) {
+  const counts = new Map<ToolKind, number>()
+  for (const kind of kinds) counts.set(kind, (counts.get(kind) ?? 0) + 1)
   const text = [...counts]
-    .map(([kind, { n, active }]) => {
+    .map(([kind, n]) => {
       const w = toolWords[kind]
       return `${active ? w.active : w.done} ${n} ${n === 1 ? w.one : w.many}`
     })
     .join(", ")
   const line = text.charAt(0).toUpperCase() + text.slice(1)
-  return calls.some((call) => call.active) ? line + "…" : line
+  return active && line ? line + "…" : line
+}
+
+// Claude Code's shell commands that only look at things, so they count as reads,
+// searches, or listings in a summary rather than as shell commands.
+const searchCommands = new Set(["find", "grep", "rg", "ag", "ack", "locate", "which", "whereis"])
+const readCommands = new Set(["cat", "head", "tail", "less", "more", "wc", "stat", "file", "strings", "jq", "awk", "cut", "sort", "uniq", "tr"])
+const listCommands = new Set(["ls", "tree", "du"])
+const neutralCommands = new Set(["echo", "printf", "true", "false", ":"])
+
+/**
+ * What a shell command counts as in a summary, as Claude Code decides it: every
+ * part of a pipeline or `&&` chain must list, read, or search (ignoring `echo` and
+ * the like), or it's just a shell command.
+ */
+export function commandKind(command: string): ToolKind {
+  const words = command
+    .split(/\|\||&&|[|;\n]/)
+    .map((part) => part.trim().split(/\s+/)[0] ?? "")
+    .filter((word) => word && !neutralCommands.has(word))
+  if (!words.length) return "bash"
+  if (words.every((word) => listCommands.has(word))) return "list"
+  if (!words.every((word) => listCommands.has(word) || readCommands.has(word) || searchCommands.has(word))) return "bash"
+  return words.some((word) => searchCommands.has(word)) ? "search" : "read"
+}
+
+/** "$ npm test" for the hint under a running group: one line of whitespace, capped. */
+export function commandHint(command: string, max = 300) {
+  const hint = "$ " + command.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n")
+  return hint.length > max ? hint.slice(0, max - 1) + "…" : hint
+}
+
+/** Claude Code's past-tense verbs for "✻ Worked for 12s", one per turn. */
+const turnVerbs = ["Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked"]
+
+/** A verb for a turn, picked from its ID so it stays the same every time it's drawn. */
+export function turnVerb(id: string) {
+  let hash = 0
+  for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
+  return turnVerbs[hash % turnVerbs.length]
 }
 
 /**
