@@ -3,6 +3,7 @@ import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createMemo, createResource, For, Show } from "solid-js"
 import { Clawd } from "./clawd"
+import { configuredMaxWidth, GUTTER } from "./prompt"
 import {
   abbreviateHome,
   describeModel,
@@ -25,11 +26,13 @@ type Options = {
 export function Welcome(props: Options) {
   const dims = useTerminalDimensions()
 
-  // Match the width of the prompt underneath so the two line up.
+  // Match the width of the prompt underneath so the two line up. Without a
+  // configured prompt.max_width that's the whole terminal, like Claude Code.
   const width = createMemo(() => {
-    const configured = (props.api.tuiConfig as { prompt?: { max_width?: number | "auto" } }).prompt?.max_width
-    const max = configured === "auto" ? Math.max(75, Math.floor(dims().width * 0.7)) : (configured ?? 75)
-    return Math.max(20, Math.min(dims().width - 4, max))
+    const configured = configuredMaxWidth(props.api)
+    if (configured === undefined) return Math.max(20, dims().width)
+    const max = configured === "auto" ? Math.max(75, Math.floor(dims().width * 0.7)) : configured
+    return Math.max(20, Math.min(dims().width - 2 * GUTTER, max))
   })
 
   const version = () => props.api.app.version

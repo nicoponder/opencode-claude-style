@@ -5,11 +5,15 @@ import path from "node:path"
 import {
   abbreviateHome,
   describeModel,
+  formatDuration,
+  lastTurn,
+  modeLabel,
   readRecentModels,
   relativeTime,
   truncateEnd,
   truncateStart,
   type ProviderInfo,
+  type TurnMessage,
 } from "../src/format"
 
 const providers: ProviderInfo[] = [
@@ -108,5 +112,59 @@ describe("text helpers", () => {
     expect(relativeTime(now - 3 * 60_000, now)).toBe("3m ago")
     expect(relativeTime(now - 2 * 3_600_000, now)).toBe("2h ago")
     expect(relativeTime(now - 3 * 86_400_000, now)).toBe("3d ago")
+  })
+})
+
+describe("formatDuration", () => {
+  test("matches Claude Code's format", () => {
+    expect(formatDuration(0)).toBe("0s")
+    expect(formatDuration(12_900)).toBe("12s")
+    expect(formatDuration(65_000)).toBe("1m 5s")
+    expect(formatDuration(120_000)).toBe("2m 0s")
+    expect(formatDuration(3_723_000)).toBe("1h 2m 3s")
+    expect(formatDuration(-5)).toBe("0s")
+  })
+})
+
+describe("lastTurn", () => {
+  const user = (id: string, created: number): TurnMessage => ({ id, role: "user", time: { created } })
+  const reply = (id: string, parentID: string, created: number, completed?: number, error?: string): TurnMessage => ({
+    id,
+    role: "assistant",
+    parentID,
+    time: { created, completed },
+    ...(error && { error: { name: error } }),
+  })
+
+  test("spans the last user message to its final reply", () => {
+    const turn = lastTurn([
+      user("u1", 0),
+      reply("a1", "u1", 1, 5),
+      user("u2", 100),
+      reply("a2", "u2", 101, 110),
+      reply("a3", "u2", 110, 142),
+    ])
+    expect(turn).toEqual({ start: 100, end: 142, failed: false })
+  })
+
+  test("has no end while a reply is still running or none has started", () => {
+    expect(lastTurn([user("u1", 0), reply("a1", "u1", 1, 5), reply("a2", "u1", 5)])?.end).toBeUndefined()
+    expect(lastTurn([user("u1", 0), reply("a1", "u1", 1, 5), user("u2", 10)])?.end).toBeUndefined()
+  })
+
+  test("flags errored or interrupted turns", () => {
+    expect(lastTurn([user("u1", 0), reply("a1", "u1", 1, 5, "MessageAbortedError")])?.failed).toBe(true)
+  })
+
+  test("returns undefined for an empty session", () => {
+    expect(lastTurn([])).toBeUndefined()
+  })
+})
+
+describe("modeLabel", () => {
+  test("lowercases the agent and picks Claude Code's glyph", () => {
+    expect(modeLabel("Build")).toEqual({ glyph: "⏵⏵", name: "build" })
+    expect(modeLabel("Plan")).toEqual({ glyph: "⏸", name: "plan" })
+    expect(modeLabel("Docs-Writer")).toEqual({ glyph: "⏵⏵", name: "docs-writer" })
   })
 })

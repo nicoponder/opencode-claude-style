@@ -8,9 +8,16 @@ export const THEME = "claude-code"
 export type Options = {
   /** Replace the OpenCode logo with Claude Code's welcome banner and Clawd. Default: true. */
   banner?: boolean
-  /** Use Claude Code-style prompt placeholders and hint text. Default: true. */
+  /**
+   * Restyle the prompt like Claude Code's input: full width between two rules,
+   * Claude Code-style placeholders, and a "⏵⏵ build mode on" line underneath.
+   * Default: true.
+   */
   prompt?: boolean
-  /** Show a "✻ Pondering… (12s)" line above the prompt while a session is busy. Default: true. */
+  /**
+   * Show a "✻ Pondering… (12s)" line above the prompt while a session is busy, then
+   * "✻ Thought for 12s" once the turn is done. Default: true.
+   */
   spinner?: boolean
   /** Name for "Welcome back <name>!". Defaults to config.username, then the OS user. */
   name?: string
@@ -46,6 +53,11 @@ const tui: TuiPlugin = async (api, rawOptions, meta) => {
         home_logo() {
           return <Welcome api={api} name={options.name} />
         },
+        // The banner already shows the directory and version, and Claude Code has
+        // no footer, so replace OpenCode's home footer with nothing.
+        home_footer() {
+          return <box />
+        },
       }),
       ...(options.prompt && {
         home_prompt(_ctx, props) {
@@ -58,7 +70,7 @@ const tui: TuiPlugin = async (api, rawOptions, meta) => {
             <SessionPrompt
               api={api}
               spinner={options.spinner}
-              placeholders={options.prompt}
+              restyle={options.prompt}
               session_id={props.session_id}
               visible={props.visible}
               disabled={props.disabled}

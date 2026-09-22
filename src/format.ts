@@ -82,3 +82,49 @@ export function relativeTime(ms: number | undefined, now = Date.now()) {
   const d = Math.round(h / 24)
   return `${d}d ago`
 }
+
+/** Durations the way Claude Code prints them: "12s", "1m 5s", "1h 2m 3s". */
+export function formatDuration(ms: number) {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  if (h > 0) return `${h}h ${m}m ${s}s`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
+}
+
+/** The fields of an OpenCode message that `lastTurn` needs. */
+export type TurnMessage = {
+  id: string
+  role: "user" | "assistant"
+  parentID?: string
+  time: { created: number; completed?: number }
+  error?: { name: string }
+}
+
+/**
+ * The latest turn in a session: from the last user message until its final reply
+ * completed. `end` is missing while the turn is still running, and `failed` is set
+ * when a reply errored or was interrupted.
+ */
+export function lastTurn(messages: ReadonlyArray<TurnMessage>) {
+  const user = [...messages].reverse().find((m) => m.role === "user")
+  if (!user) return
+  const replies = messages.filter((m) => m.role === "assistant" && m.parentID === user.id)
+  const done = replies.length > 0 && replies.every((m) => m.time.completed)
+  return {
+    start: user.time.created,
+    end: done ? Math.max(...replies.map((m) => m.time.completed!)) : undefined,
+    failed: replies.some((m) => m.error),
+  }
+}
+
+/**
+ * Claude Code's footer label for an OpenCode agent: lowercase, with ⏸ for plan
+ * mode and ⏵⏵ (Claude Code's accept-edits glyph) for agents that act.
+ */
+export function modeLabel(agent: string) {
+  const name = agent.toLowerCase()
+  return { glyph: name === "plan" ? "⏸" : "⏵⏵", name }
+}

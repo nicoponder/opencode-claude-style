@@ -19,8 +19,9 @@ work exactly as before. None of Claude Code's features are copied.
 | **`claude-code` theme** | Claude Code's dark and light palettes: brand orange `#D77757`, the gray user-message background, the lavender accent used for inline code and links, success/error/warning colors, diff backgrounds, Monokai Extended (dark) and GitHub (light) syntax colors. The background is transparent, so your terminal's background shows through as it does in Claude Code. |
 | **Welcome banner** | Replaces the OpenCode logo with Claude Code's welcome box: an orange rounded border with the name and version in the top edge, "Welcome back *name*!", **Clawd**, your model and directory, plus "Tips for getting started" and "Recent activity" (your latest OpenCode sessions). Below 64 columns it switches to Claude Code's compact three-line header. |
 | **Clawd** | Drawn from the same quadrant-block characters Claude Code uses (`▐▛███▜▌` / `▝▜█████▛▘` / `▘▘ ▝▝`), with black eyes. |
-| **Prompt** | Claude Code-style placeholder suggestions (`"fix lint errors"`, `"how does <filepath> work?"`, …), a dim hint in the spot where Claude Code shows `? for shortcuts`, and no filled background. |
-| **Spinner line** | While a session is working, shows `✻ Pondering… (12s)` above the prompt. The glyph cycles through `· ✢ ✳ ✶ ✻ ✽`, the verb is picked at random from a whimsical list, and a highlight sweeps across it. This is decoration only; OpenCode's own progress indicator is still there. |
+| **Prompt** | Sits at the bottom of the home screen, as it does in a session, and spans the full terminal width between two horizontal rules, like Claude Code's input. It starts with Claude Code's `❯` (`!` in shell mode) instead of OpenCode's colored bar, has no filled background, and uses Claude Code-style placeholder suggestions (`"fix lint errors"`, `"how does <filepath> work?"`, …). OpenCode's agent and model row is removed from inside the prompt, and OpenCode's startup tip moves above it. |
+| **Mode line** | The bottom line, under the prompt: `⏵⏵ build mode on (tab to cycle)` or `⏸ plan mode on (tab to cycle)`, in the agent's color, like Claude Code's `⏸ plan mode on (shift+tab to cycle)`. Other agents get `⏵⏵`, shell mode shows `! shell mode on`, and the key shown is whatever `agent.cycle` is bound to. The model isn't shown, as in Claude Code. |
+| **Spinner line** | While a session is working, shows `✻ Pondering… (12s)` above the prompt. The glyph cycles through `· ✢ ✳ ✶ ✻ ✽`, the verb is picked at random from a whimsical list, and a highlight sweeps across it. When the turn finishes, the line becomes `✻ Thought for 12s` (or `1m 5s`), timed from your message to the last reply. Turns that error or are interrupted show nothing. OpenCode's own progress indicator is still there. |
 | **Agent colors** (optional server plugin) | Build uses lavender. Plan uses teal, like Claude Code's plan mode. Without this, OpenCode colors agents by their position in the list, and plan comes out yellow. |
 
 ## Install
@@ -86,9 +87,9 @@ Pass options with OpenCode's `[spec, options]` plugin syntax:
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `banner` | `true` | Replace the OpenCode logo with the welcome banner and Clawd. |
-| `prompt` | `true` | Claude Code-style placeholders and hint text. |
-| `spinner` | `true` | Show the `✻ Pondering… (12s)` line while a session is busy. |
+| `banner` | `true` | Replace the OpenCode logo with the welcome banner and Clawd, and remove OpenCode's home footer (directory and version, which the banner already shows). |
+| `prompt` | `true` | Full-width prompt between rules, Claude Code-style placeholders, and the mode line. |
+| `spinner` | `true` | Show the `✻ Pondering… (12s)` line while a session is busy, then `✻ Thought for 12s` once it's done. |
 | `name` | `username` from config, then your OS user | The name in "Welcome back *name*!". |
 | `activateTheme` | `true` | Switch to `claude-code` on first load if `tui.json` sets no theme. |
 
@@ -115,14 +116,31 @@ The server plugin in `opencode.json` takes one option: `agentColors`
 These parts of OpenCode's UI aren't exposed to plugins, so they keep their
 OpenCode styling:
 
-- The prompt keeps OpenCode's colored left bar and its `Ask anything… "…"` prefix.
-  Claude Code's `>` marker and horizontal rules can't be added inside it. (Adding
-  rules around the whole prompt was tried; it looked worse.)
+- The prompt keeps OpenCode's `Ask anything… "…"` placeholder prefix.
+- Plugins can't configure the prompt or the home screen's layout, so the plugin
+  finds the parts it changes in the rendered layout: the agent and model row
+  (hidden, and read to get the current agent), the colored bar (blanked, with `❯`
+  drawn over it), and the home screen's spacers and tip (rearranged so the prompt
+  sits at the bottom). If a future OpenCode version changes that layout, those
+  parts stay as OpenCode draws them and the mode line stays empty, rather than
+  anything breaking. Hiding the agent row also hides the model variant (reasoning
+  effort) and the `auto` permissions tag.
+- While a session is busy, OpenCode shows its own `esc interrupt` indicator where
+  the mode line is, so the mode line comes back when the turn finishes.
+- OpenCode's `tab agents` and `ctrl+p commands` hints stay at the right of the mode line.
+- The home prompt ignores OpenCode's default 75-column cap so it can span the
+  terminal. If you set `prompt.max_width` in `tui.json`, that value is respected,
+  and the welcome banner and prompt use it instead.
+- The rules are drawn only while the theme leaves the prompt unfilled (as
+  `claude-code` does). Under a theme with a filled prompt, the fill already shows
+  its width.
+- `Thought for` appears above the prompt for the latest turn, rather than inline
+  after every reply in the transcript.
 - Messages keep OpenCode's layout. There are no `⏺` bullets or `⎿` result
   connectors, and no `>` before user messages.
 - Shell mode (`!`) uses the theme's primary orange rather than Claude Code's
   pink bash border.
-- OpenCode's own home footer and startup tips are left in place.
+- OpenCode's startup tips are kept, just above the prompt.
 
 ## Development
 
