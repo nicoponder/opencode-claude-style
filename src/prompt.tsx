@@ -1,20 +1,33 @@
 /** @jsxImportSource @opentui/solid */
-import type { Renderable, TuiPluginApi, TuiPromptRef } from "@opencode-ai/plugin/tui"
-import type { RGBA, TextBufferRenderable } from "@opentui/core"
-import { type JSX, useTerminalDimensions } from "@opentui/solid"
-import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js"
-import { formatClock, formatDuration, formatTokens, lastTurn, modeLabel, turnProgress, turnVerb, type TurnPart } from "./format"
+import type { Plugin } from "@opencode/plugin/tui"
+import type { SlotMap } from "@opencode/plugin/tui/context"
+import type { RGBA, Renderable } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
+import { createMemo, createSignal, For, getOwner, Match, onCleanup, onMount, Show, Switch } from "solid-js"
+import {
+  formatClock,
+  formatDuration,
+  formatTokens,
+  lastTurn,
+  modeLabel,
+  truncateEnd,
+  turnProgress,
+  turnVerb,
+} from "./format"
+import { turnMessages } from "./data"
 import { claude, pick, spinnerFrames, spinnerVerbs, tips } from "./palette"
+import type { ResolvedOptions } from "./tui"
+import { type Detached, detach } from "./detach"
+import { blankBar, drawn, find, idOf, interceptSetter, isTextarea, placeBefore, placeIn, textOf, debug } from "./tree"
 import { useTranscript } from "./transcript"
 import { useUsageLine } from "./usage"
-import { blankBar, find } from "./tree"
 
-/** Left and right padding OpenCode puts around both the home screen and the session column. */
-export const GUTTER = 2
+type Context = Plugin.Context
+type FooterInput = SlotMap["prompt.footer"]
 
-/** `prompt.max_width` from tui.json, if the user set one. */
-export function configuredMaxWidth(api: TuiPluginApi) {
-  return (api.tuiConfig as { prompt?: { max_width?: number | "auto" } }).prompt?.max_width
+/** The padding OpenCode puts on each side of the home screen and the session column. */
+export function gutter(width: number) {
+  return width < 44 ? 1 : 2
 }
 
 /** Placeholder examples phrased like Claude Code's `Try "…"` suggestions. */
@@ -29,292 +42,263 @@ export const placeholders = {
   shell: ["git status", "ls -la", "npm test"],
 }
 
-/** What the prompt's hidden agent row says: the current agent, its color, and the input mode. */
-type Mode = { agent: string; color: RGBA; shell: boolean }
+/** What the prompt's hidden agent row says: the current agent and its color. */
+type Agent = { name: string; color: RGBA }
 
 /**
- * Claude Code's footer under the input: "⏵⏵ build mode on (tab to cycle)" or
- * "⏸ plan mode on (tab to cycle)", in the agent's color. It sits in the row where
- * OpenCode puts the prompt hint, so it drops the cycle hint, then the words, as
- * the terminal narrows and OpenCode's keybind hints need the space.
+ * The parts of OpenCode's prompt this restyles, found from the footer row our
+ * mode line sits in. The prompt is a box holding, in order: the input box with
+ * the colored bar down its left, a blank row under it, and the footer row.
  */
-function ModeLine(props: { api: TuiPluginApi; mode?: Mode; right: JSX.Element }) {
-  const theme = () => props.api.theme.current
-  const dims = useTerminalDimensions()
-  const cycle = createMemo(() => {
-    const bindings = props.api.keymap
-      .getCommandBindings({ visibility: "registered", commands: ["agent.cycle"] })
-      .get("agent.cycle")
-    return props.api.keys.formatBindings(bindings) || "tab"
-  })
-  const text = () => {
-    const mode = props.mode
-    if (!mode) return
-    const label = mode.shell ? { glyph: "!", name: "shell" } : modeLabel(mode.agent)
-    const width = dims().width
-    if (width < 50) return { main: label.glyph }
-    const main = `${label.glyph} ${label.name} mode on`
-    if (width < 70 || mode.shell) return { main }
-    return { main, hint: ` (${cycle()} to cycle)` }
-  }
-  return (
-    <box flexDirection="row" gap={1} marginLeft={2}>
-      <Show when={text()}>
-        {(t) => (
-          <text wrapMode="none" selectable={false}>
-            <span style={{ fg: props.mode!.color }}>{t().main}</span>
-            <span style={{ fg: theme().textMuted }}>{t().hint ?? ""}</span>
-          </text>
-        )}
-      </Show>
-      {props.right}
-    </box>
-  )
+function promptParts(footer: Renderable, ours: WeakSet<Renderable>) {
+  const anchor = footer.parent
+  if (!anchor) return
+  const rows = drawn(anchor).filter((node) => !ours.has(node))
+  const index = rows.indexOf(footer)
+  const bar = rows[index - 2]
+  const blank = rows[index - 1]
+  if (!bar || !blank) return
+  const textarea = find(bar, isTextarea)
+  const input = textarea?.parent
+  if (!textarea || !input) return
+  // The agent and model row: the sibling after the text input.
+  const siblings = drawn(input)
+  const meta = siblings[siblings.indexOf(textarea) + 1]
+  return { anchor, bar, blank, input, textarea, meta }
+}
+
+function sameAgent(a: Agent | undefined, b: Agent | undefined) {
+  if (!a || !b) return a === b
+  return a.name === b.name && a.color.equals(b.color)
 }
 
 /**
- * OpenCode's prompt, restyled like Claude Code's input:
+ * Everything under and around OpenCode's prompt, from one component OpenCode
+ * mounts at the start of the prompt's footer row (on the home screen and in
+ * sessions alike):
  *
- * - Two horizontal rules frame it. OpenCode's prompt has a filled background
- *   instead, which this theme makes transparent, so without them nothing shows
- *   where the prompt is. The bottom rule overlays the blank row OpenCode leaves
- *   under the input (where a filled theme draws the panel's lower edge).
- * - The agent and model row inside the prompt is hidden. The agent moves to the
- *   mode line underneath, and the model isn't shown, as in Claude Code.
- * - OpenCode's colored bar left of the input is blanked, and Claude Code's `❯`
- *   (or `!` in shell mode) is drawn over its first row.
+ * - Claude Code's mode line, "⏵⏵ build mode on (shift+tab to cycle)", in the
+ *   agent's color, where OpenCode shows the directory.
+ * - The prompt restyled like Claude Code's input: two full-width rules around it,
+ *   `❯` in place of the colored bar, no agent and model row (the agent moves to
+ *   the mode line; the model isn't shown, as in Claude Code), and Claude Code's
+ *   placeholder suggestions.
+ * - The usage line, "14.9k | ctx 25% | 5h: 48% | 7d: 6%", in place of OpenCode's.
  *
- * Plugins can't configure the inside of the prompt, so these parts are found in
- * the rendered tree. If OpenCode's layout ever changes so they can't be found, the
- * prompt is left as OpenCode draws it and the mode line stays empty.
+ * Plugins can't configure the inside of the prompt, so its parts are found in the
+ * rendered tree. If OpenCode's layout changes so they can't be found, the prompt
+ * is left as OpenCode draws it and the mode line stays empty.
  */
-function Restyled(props: {
-  api: TuiPluginApi
-  /** Run the rules out through OpenCode's gutter to the edges of the terminal. */
-  bleed: boolean
-  /** Lift OpenCode's max width on the home prompt's container. */
-  uncap?: boolean
-  /** Move the home prompt from the middle of the screen to the bottom. */
-  anchor?: boolean
-  visible?: boolean
-  right: JSX.Element
-  /**
-   * Renders the prompt, given a function that makes the mode line to pass as its
-   * hint. OpenCode swaps the hint out for "esc interrupt" while a turn runs and
-   * destroys it, so it has to get a new one each time it shows it again.
-   */
-  children: (hint: () => JSX.Element) => JSX.Element
-}) {
-  const theme = () => props.api.theme.current
-  const ruled = () => props.visible !== false && theme().backgroundElement.a === 0
-  const edge = () => (props.bleed ? -GUTTER : 0)
-
-  let box: Renderable | undefined
+export function PromptChrome(props: { context: Context; options: ResolvedOptions; input: FooterInput }) {
+  const context = props.context
+  const theme = () => context.theme
+  const dims = useTerminalDimensions()
+  const owner = getOwner()
+  const ours = new WeakSet<Renderable>()
   let row: Renderable | undefined
-  const [mode, setMode] = createSignal<Mode | undefined>(undefined, { equals: sameMode })
-  const [marker, setMarker] = createSignal(false)
+  const [agent, setAgent] = createSignal<Agent | undefined>(undefined, { equals: sameAgent })
+  const busy = () => !!props.input.sessionID && context.data.session.status(props.input.sessionID) === "running"
+  const restyle = props.options.prompt
+  const showMode = () => restyle && !busy()
 
-  // Restyle the prompt as soon as it's laid out, then keep reading the hidden agent
-  // row: OpenCode still updates it when the agent changes, it just isn't drawn.
-  const sync = () => {
-    if (!box) return
-    if (props.anchor) anchorToBottom(box)
-    if (!row || row.isDestroyed) {
-      row = agentRow(box)
-      if (!row) return
-      row.visible = false
-      const input = row.parent
-      if (input) {
-        // Drop the blank line above the input so the rules hug it, and pull the
-        // text in so it sits two columns after the `❯`, as in Claude Code.
-        input.paddingTop = 0
-        input.paddingLeft = 1
-        if (input.parent) setMarker(blankBar(input.parent))
-      }
-    }
-    const label = row.getChildren()[0]?.getChildren()[0] as Partial<Pick<TextBufferRenderable, "plainText" | "fg">> | undefined
-    const agent = label?.plainText
-    // In shell mode OpenCode swaps the agent's name for "Shell".
-    setMode(agent && label.fg ? { agent, color: label.fg, shell: agent === "Shell" } : undefined)
+  if (props.options.usage) useUsageLine(context, () => props.input.sessionID, () => row?.parent ?? undefined, ours)
+
+  const ruled = () => theme().decrease(theme().background.raised.base).a === 0
+  const edge = () => -gutter(dims().width)
+  const rule = () => (
+    <box height={1} marginLeft={edge()} marginRight={edge()} flexShrink={0} border={["top"]} borderColor={theme().border.base} />
+  )
+  const nodes: Detached<null>[] = []
+  const make = (render: () => unknown) => {
+    const d = detach(owner, null, render)
+    ours.add(d.node)
+    nodes.push(d)
+    return d.node
   }
+  let top: Renderable | undefined
+  let bottom: Renderable | undefined
+  let marker: Renderable | undefined
+  let hidden: Renderable[] = []
+  const patched = new WeakSet<Renderable>()
+
+  const syncUnsafe = () => {
+    if (!row || row.isDestroyed || !row.parent) return
+    const footer = row.parent
+    // OpenCode's directory label, which the mode line takes the place of.
+    const location = find(footer, (node) => idOf(node) === "prompt.footer.location")
+    if (location) location.visible = !showMode()
+    if (!restyle) return
+    const parts = promptParts(footer, ours)
+    if (!parts) return
+    const label = parts.meta && find(parts.meta, (node) => textOf(node) !== undefined && textOf(node) !== "")
+    const name = textOf(label)
+    const color = (label as { fg?: RGBA } | undefined)?.fg
+    // In a narrow terminal OpenCode drops the agent from the row; keep the last one.
+    const here = context.location ?? context.data.location.default()
+    const known = (context.data.location.agent.list(here) ?? []).some(
+      (a) => a.id.toLowerCase() === name?.toLowerCase() || a.name.toLowerCase() === name?.toLowerCase(),
+    )
+    if (name && color && known) setAgent({ name, color })
+
+    if (!patched.has(parts.bar)) {
+      patched.add(parts.bar)
+      blankBar(parts.bar)
+      placeholder(parts.textarea)
+    }
+    // Drop the blank line above the input so the rules hug it, and pull the text
+    // in so it sits two columns after the `❯`, as in Claude Code.
+    if (parts.input.paddingTop !== 0) parts.input.paddingTop = 0
+    if (parts.input.paddingLeft !== 1) parts.input.paddingLeft = 1
+    for (const node of [parts.meta, parts.blank]) {
+      if (node && node.visible) node.visible = false
+    }
+    hidden = [parts.meta, parts.blank].filter((node): node is Renderable => !!node)
+
+    top ??= make(rule)
+    bottom ??= make(rule)
+    marker ??= make(() => (
+      <box position="absolute" top={ruled() ? 1 : 0} left={0} zIndex={1}>
+        <text fg={props.input.mode === "shell" ? theme().text.action.primary.selected : theme().text.base} wrapMode="none" selectable={false}>
+          {props.input.mode === "shell" ? "!" : "❯"}
+        </text>
+      </box>
+    ))
+    top.visible = ruled()
+    bottom.visible = ruled()
+    placeBefore(top, parts.bar)
+    placeBefore(bottom, footer)
+    placeIn(marker, parts.anchor)
+  }
+
+  /**
+   * Claude Code's suggestions in place of OpenCode's: `Try "fix lint errors"`.
+   * OpenCode rotates its placeholder every so often; each time it does, the next
+   * suggestion here shows instead.
+   */
+  function placeholder(textarea: Renderable) {
+    let seen: unknown
+    let turn = -1
+    interceptSetter<unknown>(textarea, "placeholder", (value, set) => {
+      if (typeof value !== "string" || !value) return set(value)
+      if (value !== seen) turn++
+      seen = value
+      const shell = value.startsWith("Run a command")
+      const list = shell ? placeholders.shell : placeholders.normal
+      const example = list[turn % list.length]
+      const text = shell ? `Run a command… "${example}"` : `Try "${example}"`
+      set(truncateEnd(text, Math.max(1, dims().width - 2 * gutter(dims().width) - 4)))
+    })
+    // Go through the wrapper once, for the placeholder already showing.
+    const input = textarea as unknown as { placeholder: unknown }
+    if (typeof input.placeholder === "string") input.placeholder = input.placeholder
+  }
+
+  const sync = () => {
+    try {
+      syncUnsafe()
+    } catch (error) {
+      debug("sync failed", error)
+    }
+  }
+
   onMount(() => {
-    const timer = setTimeout(() => {
-      if (props.uncap && box) uncap(box)
-      sync()
-    }, 0)
+    const timer = setTimeout(sync, 0)
     const poll = setInterval(sync, 150)
     onCleanup(() => {
       clearTimeout(timer)
       clearInterval(poll)
+      for (const node of hidden) if (!node.isDestroyed) node.visible = true
+      for (const node of nodes) node.dispose()
     })
   })
 
   return (
-    <box flexDirection="column" width="100%" ref={(r: Renderable) => (box = r)}>
-      <Show when={ruled()}>
-        <box height={1} marginLeft={edge()} marginRight={edge()} border={["top"]} borderColor={theme().border} />
-      </Show>
-      {props.children(() => <ModeLine api={props.api} mode={mode()} right={props.right} />)}
-      <Show when={marker() && props.visible !== false && mode()}>
-        {(m) => (
-          <box position="absolute" top={ruled() ? 1 : 0} left={0} zIndex={1}>
-            <text fg={m().shell ? m().color : theme().text} wrapMode="none" selectable={false}>
-              {m().shell ? "!" : "❯"}
-            </text>
-          </box>
-        )}
-      </Show>
-      <Show when={ruled()}>
-        <box
-          position="absolute"
-          bottom={1}
-          left={edge()}
-          right={edge()}
-          height={1}
-          zIndex={1}
-          border={["top"]}
-          borderColor={theme().border}
-        />
+    <box ref={(r: Renderable) => (row = r)} flexDirection="row" flexShrink={0} marginLeft={showMode() ? 2 : 0}>
+      <Show when={showMode()}>
+        <ModeLine context={context} agent={agent()} shell={props.input.mode === "shell"} />
       </Show>
     </box>
   )
 }
 
 /**
- * OpenCode centers the home screen between two growing spacers, with its tips
- * under the prompt. Claude Code's prompt sits at the bottom of the terminal, so
- * stop the lower spacer growing and move whatever sits between the prompt and it
- * above the prompt. Safe to repeat: the tips can appear after the prompt does.
+ * Claude Code's footer under the input: "⏵⏵ build mode on (shift+tab to cycle)"
+ * or "⏸ plan mode on (shift+tab to cycle)", in the agent's color. It drops the
+ * cycle hint, then the words, as the terminal narrows.
  */
-function anchorToBottom(el: Renderable) {
-  for (let node = el, depth = 0; node.parent && depth < 3; node = node.parent, depth++) {
-    const parent = node.parent
-    const siblings = parent.getChildren()
-    const after = siblings.slice(siblings.indexOf(node) + 1)
-    const spacer = after.find((s) => s.getLayoutNode().getFlexGrow() > 0)
-    if (!spacer) continue
-    for (const s of after.slice(0, after.indexOf(spacer))) if (s.visible) parent.insertBefore(s, node)
-    spacer.flexGrow = 0
-    return
+function ModeLine(props: { context: Context; agent?: Agent; shell: boolean }) {
+  const theme = () => props.context.theme
+  const dims = useTerminalDimensions()
+  const cycle = () => props.context.keymap.shortcuts("agent.cycle")[0] ?? "tab"
+  const text = (): { main: string; hint?: string } | undefined => {
+    if (!props.agent && !props.shell) return
+    const label = props.shell ? { glyph: "!", name: "shell" } : modeLabel(props.agent!.name)
+    const width = dims().width
+    if (width < 50) return { main: label.glyph }
+    const main = `${label.glyph} ${label.name} mode on`
+    if (width < 70 || props.shell) return { main }
+    return { main, hint: ` (${cycle()} to cycle)` }
   }
-}
-
-function sameMode(a: Mode | undefined, b: Mode | undefined) {
-  if (!a || !b) return a === b
-  return a.agent === b.agent && a.shell === b.shell && a.color.equals(b.color)
-}
-
-/**
- * The row under OpenCode's prompt input that shows "Build · Model Provider": the
- * sibling after the textarea. The textarea is the only descendant with extmarks.
- */
-function agentRow(root: Renderable): Renderable | undefined {
-  const textarea = find(root, (node) => "extmarks" in node && "plainText" in node)
-  const siblings = textarea?.parent?.getChildren() ?? []
-  const row = siblings[siblings.indexOf(textarea!) + 1]
-  return row && row.getChildrenCount() > 0 ? row : undefined
-}
-
-export function HomePrompt(props: { api: TuiPluginApi; ref?: (ref: TuiPromptRef | undefined) => void }) {
-  const Prompt = props.api.ui.Prompt
-  const Slot = props.api.ui.Slot
-  // OpenCode caps the home prompt at prompt.max_width, 75 columns by default. Claude
-  // Code's prompt spans the terminal, so lift the cap unless the user set one.
-  const fullWidth = configuredMaxWidth(props.api) === undefined
-  return (
-    <Restyled api={props.api} bleed={fullWidth} uncap={fullWidth} anchor right={<Slot name="home_prompt_right" />}>
-      {(hint) => <Prompt ref={(r) => props.ref?.(r)} placeholders={placeholders} hint={hint()} />}
-    </Restyled>
-  )
-}
-
-/** Lift the nearest ancestor's maxWidth: the box OpenCode wraps the home prompt in. */
-function uncap(el: Renderable) {
-  for (let node = el.parent, depth = 0; node && depth < 4; node = node.parent, depth++) {
-    // Yoga reports an unset maxWidth with unit 0 (Undefined).
-    if (node.getLayoutNode().getMaxWidth().unit === 0) continue
-    // opentui ignores null here, so "100%" is how to clear it.
-    node.maxWidth = "100%"
-    return
+  const color = () => {
+    if (props.shell) return theme().text.action.primary.selected
+    const name = props.agent?.name.toLowerCase()
+    const location = props.context.location ?? props.context.data.location.default()
+    const info = props.context.data.location.agent.list(location)?.find((a) => a.id === name || a.name.toLowerCase() === name)
+    // Claude Code's colors for the two built-in modes, unless you've picked one.
+    // Every theme has these base hues, though the types only list the semantic ones.
+    const hue = theme().hue as unknown as Record<string, Record<number, RGBA> | undefined>
+    if (!info?.color && name === "build") return hue.purple?.[200] ?? props.agent?.color
+    if (!info?.color && name === "plan") return hue.cyan?.[200] ?? props.agent?.color
+    return props.agent?.color
   }
-}
-
-export function SessionPrompt(props: {
-  api: TuiPluginApi
-  spinner: boolean
-  restyle: boolean
-  transcript: boolean
-  usage: boolean
-  session_id: string
-  visible?: boolean
-  disabled?: boolean
-  on_submit?: () => void
-  ref?: (ref: TuiPromptRef | undefined) => void
-}) {
-  const Prompt = props.api.ui.Prompt
-  const Slot = props.api.ui.Slot
-  const right = () => <Slot name="session_prompt_right" session_id={props.session_id} />
-  let box: Renderable | undefined
-  if (props.transcript) useTranscript(props.api, () => props.session_id, () => box)
-  if (props.usage) useUsageLine(props.api, () => props.session_id, () => box)
-  const prompt = (extra: { hint?: () => JSX.Element; right?: JSX.Element }) => (
-    <Prompt
-      sessionID={props.session_id}
-      visible={props.visible}
-      disabled={props.disabled}
-      onSubmit={() => props.on_submit?.()}
-      ref={(r) => props.ref?.(r)}
-      placeholders={props.restyle ? placeholders : undefined}
-      hint={extra.hint?.()}
-      right={extra.right}
-    />
-  )
   return (
-    <box flexDirection="column" width="100%" ref={(r: Renderable) => (box = r)}>
-      <Show when={props.spinner && props.visible !== false}>
-        <Status api={props.api} sessionID={props.session_id} inline={props.transcript} />
-      </Show>
-      <Show when={props.restyle} fallback={prompt({ right: right() })}>
-        <Restyled api={props.api} visible={props.visible} bleed={true} right={right()}>
-          {(hint) => prompt({ hint })}
-        </Restyled>
-      </Show>
-    </box>
+    <Show when={text()}>
+      {(t: () => { main: string; hint?: string }) => (
+        <text wrapMode="none" selectable={false}>
+          <span style={{ fg: color() }}>{t().main}</span>
+          <span style={{ fg: theme().text.muted }}>{t().hint ?? ""}</span>
+        </text>
+      )}
+    </Show>
   )
 }
 
 /**
  * The lines above the prompt: Claude Code's spinner while the session is busy.
  * Once the turn has finished, "✻ Worked for 12s · done 4:00 PM", unless the
- * transcript already shows that after the reply (`inline`).
+ * transcript already shows that after the reply.
  */
-function Status(props: { api: TuiPluginApi; sessionID: string; inline: boolean }) {
-  const theme = () => props.api.theme.current
-  const busy = createMemo(() => {
-    const status = props.api.state.session.status(props.sessionID)
-    return !!status && status.type !== "idle"
-  })
+export function Status(props: { context: Context; options: ResolvedOptions; sessionID: string }) {
+  const context = props.context
+  const theme = () => context.theme
+  let box: Renderable | undefined
+  if (props.options.transcript) useTranscript(context, () => props.sessionID, () => box)
+  const busy = () => context.data.session.status(props.sessionID) === "running"
   const thought = createMemo(() => {
-    if (busy() || props.inline) return
-    const messages = props.api.state.session.messages(props.sessionID)
+    if (busy() || props.options.transcript) return
+    const messages = turnMessages(context, props.sessionID)
     const turn = lastTurn(messages)
-    const user = [...messages].reverse().find((m) => m.role === "user")
+    const user = messages.findLast((m) => m.type === "user")
     if (!turn?.end || turn.failed || !user) return
     return `${turnVerb(user.id)} for ${formatDuration(turn.end - turn.start)} · done ${formatClock(turn.end)}`
   })
   return (
-    <Switch>
-      <Match when={busy()}>
-        <Spinner api={props.api} sessionID={props.sessionID} />
-      </Match>
-      <Match when={thought()}>
-        <box flexDirection="row" paddingBottom={1} flexShrink={0}>
-          <text fg={theme().textMuted} wrapMode="none">
-            ✻ {thought()}
-          </text>
-        </box>
-      </Match>
-    </Switch>
+    <box ref={(r: Renderable) => (box = r)} flexDirection="column" flexShrink={0}>
+      <Show when={props.options.spinner}>
+        <Switch>
+          <Match when={busy()}>
+            <Spinner context={context} sessionID={props.sessionID} />
+          </Match>
+          <Match when={thought()}>
+            <box flexDirection="row" paddingBottom={1} flexShrink={0}>
+              <text fg={theme().text.muted} wrapMode="none">
+                ✻ {thought()}
+              </text>
+            </box>
+          </Match>
+        </Switch>
+      </Show>
+    </box>
   )
 }
 
@@ -323,18 +307,16 @@ function Status(props: { api: TuiPluginApi; sessionID: string; inline: boolean }
  * "✻ Pondering… (12s · ↓ 1.2k tokens · thinking)", timed from your message, with
  * a tip underneath. The glyph cycles and the verb shimmers.
  */
-function Spinner(props: { api: TuiPluginApi; sessionID: string }) {
-  const theme = () => props.api.theme.current
+function Spinner(props: { context: Context; sessionID: string }) {
+  const theme = () => props.context.theme
   const [tick, setTick] = createSignal(0)
   const mounted = Date.now()
-  const verb = randomVerb()
+  const verb = spinnerVerbs[Math.floor(Math.random() * spinnerVerbs.length)]
   const tip = tips[Math.floor(Math.random() * tips.length)]
   const timer = setInterval(() => setTick((t) => t + 1), 120)
   onCleanup(() => clearInterval(timer))
 
-  const progress = createMemo(() =>
-    turnProgress(props.api.state.session.messages(props.sessionID), (id) => props.api.state.part(id) as ReadonlyArray<TurnPart>),
-  )
+  const progress = createMemo(() => turnProgress(turnMessages(props.context, props.sessionID)))
   const glyph = () => spinnerFrames[tick() % spinnerFrames.length]
   const details = () => {
     tick()
@@ -347,28 +329,24 @@ function Spinner(props: { api: TuiPluginApi; sessionID: string }) {
       .filter(Boolean)
       .join(" · ")
   }
-  const shimmer = () => pick(claude.shimmer, props.api.theme.mode())
-  const label = () => `${verb}…`
+  const shimmer = () => pick(claude.shimmer, props.context.themeMode)
+  const label = `${verb}…`
   // A three-character highlight that sweeps across the verb, then pauses briefly.
-  const sweep = () => (tick() % (label().length + 8)) - 2
+  const sweep = () => (tick() % (label.length + 8)) - 2
 
   return (
     <box flexDirection="column" paddingBottom={1} flexShrink={0}>
       <text wrapMode="none" selectable={false}>
         <span style={{ fg: claude.body }}>{glyph()} </span>
-        <For each={Array.from(label())}>
+        <For each={Array.from(label)}>
           {(char, i) => <span style={{ fg: Math.abs(i() - sweep()) <= 1 ? shimmer() : claude.body }}>{char}</span>}
         </For>
-        <span style={{ fg: theme().textMuted }}> ({details()})</span>
+        <span style={{ fg: theme().text.muted }}> ({details()})</span>
       </text>
-      <text fg={theme().textMuted} wrapMode="none" selectable={false}>
+      <text fg={theme().text.muted} wrapMode="none" selectable={false}>
         {"  ⎿  Tip: "}
         {tip}
       </text>
     </box>
   )
-}
-
-function randomVerb() {
-  return spinnerVerbs[Math.floor(Math.random() * spinnerVerbs.length)]
 }

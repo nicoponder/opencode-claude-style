@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises"
-import os from "node:os"
-import path from "node:path"
 import type { Limits } from "./format"
 
 // 5-hour and 7-day usage for subscriptions that have them. OpenCode doesn't track
@@ -10,6 +7,13 @@ import type { Limits } from "./format"
 // refreshed here: if it has expired, nothing is shown until OpenCode refreshes it.
 
 type OAuth = { type: "oauth"; access: string; expires?: number; accountId?: string }
+
+/** A stored login, as OpenCode's credential API lists it. */
+export type Credential = {
+  integrationID: string
+  active: boolean
+  value: { type: string; access?: string; expires?: number; metadata?: { [key: string]: unknown } }
+}
 
 type Source = {
   url: string
@@ -61,29 +65,38 @@ export function parseClaudeUsage(body: unknown): Limits {
   }
 }
 
-/** OpenCode's credentials file: $XDG_DATA_HOME/opencode/auth.json. */
-function authFile() {
-  const data = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share")
-  return path.join(data, "opencode", "auth.json")
-}
-
 /** Whether a provider could have 5-hour and 7-day limits we know how to read. */
 export function hasLimits(providerID: string | undefined) {
   return !!providerID && providerID in sources
+}
+
+/** The provider's active subscription login, if it's signed in with one (not an API key). */
+export function oauthFor(providerID: string, credentials: ReadonlyArray<Credential>): OAuth | undefined {
+  const entry = credentials.find((c) => c.integrationID === providerID && c.active && c.value.type === "oauth")
+  const value = entry?.value
+  if (!value?.access) return
+  const account = value.metadata?.accountID
+  return {
+    type: "oauth",
+    access: value.access,
+    expires: value.expires,
+    ...(typeof account === "string" && { accountId: account }),
+  }
 }
 
 /**
  * The provider's current 5-hour and 7-day usage, or undefined if it has none, it
  * isn't signed in with a subscription, the login has expired, or the request fails.
  */
-export async function fetchLimits(providerID: string): Promise<Limits | undefined> {
+export async function fetchLimits(
+  providerID: string,
+  credentials: () => Promise<ReadonlyArray<Credential>>,
+): Promise<Limits | undefined> {
   const source = sources[providerID]
   if (!source) return
   try {
-    const auth = (JSON.parse(await readFile(authFile(), "utf8")) as Record<string, OAuth | { type: string }>)[providerID]
-    if (auth?.type !== "oauth") return
-    const oauth = auth as OAuth
-    if (!oauth.access || (oauth.expires && oauth.expires < Date.now())) return
+    const oauth = oauthFor(providerID, await credentials())
+    if (!oauth || (oauth.expires && oauth.expires < Date.now())) return
     const response = await fetch(source.url, { headers: source.headers(oauth), signal: AbortSignal.timeout(10_000) })
     if (!response.ok) return
     const limits = source.parse(await response.json())

@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import {
@@ -10,7 +9,6 @@ import {
   formatTokens,
   lastTurn,
   modeLabel,
-  readRecentModels,
   relativeTime,
   summarizeTools,
   commandHint,
@@ -20,77 +18,37 @@ import {
   truncateStart,
   turnOf,
   turnProgress,
+  type ModelInfo,
   type ProviderInfo,
   type TurnMessage,
-  type TurnPart,
 } from "../src/format"
 
+const models: ModelInfo[] = [
+  { id: "claude-sonnet-5", providerID: "anthropic", name: "Claude Sonnet 5" },
+  { id: "gpt-x", providerID: "openai", name: "GPT X" },
+  { id: "a/b", providerID: "openrouter", name: "A B" },
+]
 const providers: ProviderInfo[] = [
-  {
-    id: "anthropic",
-    name: "Anthropic",
-    models: { "claude-sonnet-5": { name: "Claude Sonnet 5" }, "claude-haiku-4-5": { name: "Claude Haiku 4.5" } },
-  },
-  { id: "openai", name: "OpenAI", models: { "gpt-x": { name: "GPT X" } } },
+  { id: "anthropic", name: "Anthropic" },
+  { id: "openai", name: "OpenAI" },
+  { id: "openrouter", name: "OpenRouter" },
 ]
 
 describe("describeModel", () => {
-  test("prefers config.model", () => {
-    expect(
-      describeModel({
-        providers,
-        configured: "openai/gpt-x",
-        recent: [{ providerID: "anthropic", modelID: "claude-sonnet-5" }],
-        defaults: {},
-      }),
-    ).toBe("GPT X · OpenAI")
-  })
-
-  test("falls back to the most recent valid model", () => {
-    expect(
-      describeModel({
-        providers,
-        configured: "gone/missing",
-        recent: [
-          { providerID: "gone", modelID: "missing" },
-          { providerID: "anthropic", modelID: "claude-haiku-4-5" },
-        ],
-        defaults: {},
-      }),
-    ).toBe("Claude Haiku 4.5 · Anthropic")
-  })
-
-  test("then the first provider's default model", () => {
-    expect(describeModel({ providers, recent: [], defaults: { anthropic: "claude-haiku-4-5" } })).toBe(
-      "Claude Haiku 4.5 · Anthropic",
-    )
+  test("names the prompt's selected model and its provider", () => {
+    expect(describeModel({ providerID: "openai", modelID: "gpt-x" }, models, providers)).toBe("GPT X · OpenAI")
   })
 
   test("keeps slashes in model ids", () => {
-    const withSlash: ProviderInfo[] = [{ id: "openrouter", name: "OpenRouter", models: { "a/b": { name: "A B" } } }]
-    expect(describeModel({ providers: withSlash, configured: "openrouter/a/b", recent: [], defaults: {} })).toBe(
-      "A B · OpenRouter",
-    )
+    expect(describeModel({ providerID: "openrouter", modelID: "a/b" }, models, providers)).toBe("A B · OpenRouter")
   })
 
-  test("returns undefined with no providers", () => {
-    expect(describeModel({ providers: [], recent: [], defaults: {} })).toBeUndefined()
-  })
-})
-
-describe("readRecentModels", () => {
-  test("reads model.json from the state dir", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "oc-claude-"))
-    writeFileSync(path.join(dir, "model.json"), JSON.stringify({ recent: [{ providerID: "a", modelID: "b" }] }))
-    expect(readRecentModels(dir)).toEqual([{ providerID: "a", modelID: "b" }])
+  test("falls back to IDs for models and providers it doesn't know", () => {
+    expect(describeModel({ providerID: "local", modelID: "mystery" }, models, providers)).toBe("mystery · local")
   })
 
-  test("tolerates missing or malformed files", () => {
-    expect(readRecentModels(undefined)).toEqual([])
-    const dir = mkdtempSync(path.join(os.tmpdir(), "oc-claude-"))
-    expect(readRecentModels(dir)).toEqual([])
-    writeFileSync(path.join(dir, "model.json"), "{nope")
-    expect(readRecentModels(dir)).toEqual([])
+  test("returns undefined with no model selected", () => {
+    expect(describeModel(undefined, models, providers)).toBeUndefined()
   })
 })
 
@@ -136,37 +94,43 @@ describe("formatDuration", () => {
 })
 
 describe("lastTurn", () => {
-  const user = (id: string, created: number): TurnMessage => ({ id, role: "user", time: { created } })
-  const reply = (id: string, parentID: string, created: number, completed?: number, error?: string): TurnMessage => ({
+  const user = (id: string, created: number): TurnMessage => ({ id, type: "user", time: { created } })
+  const reply = (id: string, created: number, completed?: number): TurnMessage => ({
     id,
-    role: "assistant",
-    parentID,
+    type: "assistant",
     time: { created, completed },
-    ...(error && { error: { name: error } }),
+  })
+  const idle = (id: string, created: number, outcome: TurnMessage["outcome"] = "succeeded"): TurnMessage => ({
+    id,
+    type: "idle",
+    time: { created },
+    outcome,
   })
 
-  test("spans the last user message to its final reply", () => {
+  test("spans the last user message to when OpenCode marked it idle", () => {
     const turn = lastTurn([
       user("u1", 0),
-      reply("a1", "u1", 1, 5),
+      reply("a1", 1, 5),
+      idle("i1", 6),
       user("u2", 100),
-      reply("a2", "u2", 101, 110),
-      reply("a3", "u2", 110, 142),
+      reply("a2", 101, 110),
+      reply("a3", 110, 142),
+      idle("i2", 142),
     ])
     expect(turn).toEqual({ start: 100, end: 142, failed: false, interrupted: false })
   })
 
-  test("has no end while a reply is still running or none has started", () => {
-    expect(lastTurn([user("u1", 0), reply("a1", "u1", 1, 5), reply("a2", "u1", 5)])?.end).toBeUndefined()
-    expect(lastTurn([user("u1", 0), reply("a1", "u1", 1, 5), user("u2", 10)])?.end).toBeUndefined()
+  test("has no end until the turn is idle", () => {
+    expect(lastTurn([user("u1", 0), reply("a1", 1, 5), reply("a2", 5)])?.end).toBeUndefined()
+    expect(lastTurn([user("u1", 0), reply("a1", 1, 5), idle("i1", 6), user("u2", 10)])?.end).toBeUndefined()
   })
 
-  test("flags errored or interrupted turns", () => {
-    expect(lastTurn([user("u1", 0), reply("a1", "u1", 1, 5, "MessageAbortedError")])).toMatchObject({
+  test("flags failed or interrupted turns", () => {
+    expect(lastTurn([user("u1", 0), reply("a1", 1, 5), idle("i1", 5, "interrupted")])).toMatchObject({
       failed: true,
       interrupted: true,
     })
-    expect(lastTurn([user("u1", 0), reply("a1", "u1", 1, 5, "APIError")])).toMatchObject({
+    expect(lastTurn([user("u1", 0), reply("a1", 1, 5), idle("i1", 5, "failed")])).toMatchObject({
       failed: true,
       interrupted: false,
     })
@@ -179,45 +143,64 @@ describe("lastTurn", () => {
 
 describe("turnOf", () => {
   test("describes an earlier turn, not just the latest", () => {
-    const u1: TurnMessage = { id: "u1", role: "user", time: { created: 0 } }
+    const u1: TurnMessage = { id: "u1", type: "user", time: { created: 0 } }
     const messages: TurnMessage[] = [
       u1,
-      { id: "a1", role: "assistant", parentID: "u1", time: { created: 1, completed: 9 } },
-      { id: "u2", role: "user", time: { created: 20 } },
+      { id: "a1", type: "assistant", time: { created: 1, completed: 9 } },
+      { id: "i1", type: "idle", time: { created: 8 }, outcome: "succeeded" },
+      { id: "u2", type: "user", time: { created: 20 } },
     ]
     expect(turnOf(messages, u1)).toEqual({ start: 0, end: 9, failed: false, interrupted: false })
   })
 })
 
 describe("turnProgress", () => {
-  const messages: TurnMessage[] = [
-    { id: "u1", role: "user", time: { created: 50 } },
-    { id: "a1", role: "assistant", parentID: "u1", time: { created: 51, completed: 60 }, tokens: { output: 300, reasoning: 100 } },
-    { id: "a2", role: "assistant", parentID: "u1", time: { created: 60 }, tokens: { output: 0, reasoning: 0 } },
-  ]
-
   test("counts finished steps and estimates the one in progress", () => {
-    const parts: Record<string, TurnPart[]> = {
-      a1: [{ type: "text", text: "ignored, already counted" }],
-      a2: [
-        { type: "text", text: "x".repeat(40) },
-        { type: "tool", state: { input: { command: "ls" } } },
-      ],
-    }
-    const progress = turnProgress(messages, (id) => parts[id] ?? [])
+    const messages: TurnMessage[] = [
+      { id: "u1", type: "user", time: { created: 50 } },
+      {
+        id: "a1",
+        type: "assistant",
+        time: { created: 51, completed: 60 },
+        tokens: { output: 300, reasoning: 100 },
+        content: [{ type: "text", text: "ignored, already counted" }],
+      },
+      {
+        id: "a2",
+        type: "assistant",
+        time: { created: 60 },
+        content: [
+          { type: "text", text: "x".repeat(40) },
+          { type: "tool", state: { input: { command: "ls" } } },
+        ],
+      },
+    ]
     // 400 counted, plus (40 + 16 characters of tool input) / 4.
-    expect(progress).toEqual({ start: 50, tokens: 414, thinking: false })
+    expect(turnProgress(messages)).toEqual({ start: 50, tokens: 414, thinking: false })
   })
 
   test("is thinking while the latest part is unfinished reasoning", () => {
-    const parts: Record<string, TurnPart[]> = { a2: [{ type: "reasoning", text: "hmm", time: { start: 61 } }] }
-    expect(turnProgress(messages, (id) => parts[id] ?? [])?.thinking).toBe(true)
-    parts.a2[0].time!.end = 70
-    expect(turnProgress(messages, (id) => parts[id] ?? [])?.thinking).toBe(false)
+    const thought = { type: "reasoning", text: "hmm", time: { created: 61 } as { created: number; completed?: number } }
+    const messages: TurnMessage[] = [
+      { id: "u1", type: "user", time: { created: 50 } },
+      { id: "a1", type: "assistant", time: { created: 60 }, content: [thought] },
+    ]
+    expect(turnProgress(messages)?.thinking).toBe(true)
+    thought.time.completed = 70
+    expect(turnProgress(messages)?.thinking).toBe(false)
+  })
+
+  test("only counts the latest turn", () => {
+    const messages: TurnMessage[] = [
+      { id: "u1", type: "user", time: { created: 0 } },
+      { id: "a1", type: "assistant", time: { created: 1, completed: 2 }, tokens: { output: 999, reasoning: 0 } },
+      { id: "u2", type: "user", time: { created: 10 } },
+    ]
+    expect(turnProgress(messages)).toEqual({ start: 10, tokens: 0, thinking: false })
   })
 
   test("returns undefined before any message", () => {
-    expect(turnProgress([], () => [])).toBeUndefined()
+    expect(turnProgress([])).toBeUndefined()
   })
 })
 

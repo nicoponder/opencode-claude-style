@@ -1,10 +1,9 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
-import { HomePrompt, SessionPrompt } from "./prompt"
-import { registerExpandKey } from "./transcript"
-import { Welcome } from "./welcome"
-
-export const THEME = "claude-code"
+import { Plugin } from "@opencode/plugin/tui"
+import { HomeChrome } from "./home"
+import { PromptChrome, Status } from "./prompt"
+import { installTheme } from "./theme"
+import { ExpandKey } from "./transcript"
 
 export type Options = {
   /** Replace the OpenCode logo with Claude Code's welcome banner and Clawd. Default: true. */
@@ -34,16 +33,18 @@ export type Options = {
    * login, and are fetched from that provider. Default: true.
    */
   usage?: boolean
-  /** Name for "Welcome back <name>!". Defaults to config.username, then the OS user. */
+  /** Name for "Welcome back <name>!". Defaults to the OS user. */
   name?: string
   /**
-   * Switch to the bundled `claude-code` theme the first time the plugin loads,
-   * unless tui.json already pins a theme. Default: true.
+   * Switch to the bundled `claude-code` theme the first time the plugin installs
+   * it, unless cli.json already picks a theme. Default: true.
    */
   activateTheme?: boolean
 }
 
-function readOptions(raw: unknown): Required<Omit<Options, "name">> & Pick<Options, "name"> {
+export type ResolvedOptions = Required<Omit<Options, "name">> & Pick<Options, "name">
+
+export function readOptions(raw: unknown): ResolvedOptions {
   const opts = (raw && typeof raw === "object" ? raw : {}) as Options
   return {
     banner: opts.banner !== false,
@@ -56,58 +57,44 @@ function readOptions(raw: unknown): Required<Omit<Options, "name">> & Pick<Optio
   }
 }
 
-const tui: TuiPlugin = async (api, rawOptions, meta) => {
-  const options = readOptions(rawOptions)
-
-  if (options.activateTheme && meta.state === "first" && !api.tuiConfig.theme && api.theme.has(THEME)) {
-    api.theme.set(THEME)
-  }
-
-  if (options.transcript) api.lifecycle.onDispose(registerExpandKey(api))
-
-  api.slots.register({
-    order: 50,
-    slots: {
-      ...(options.banner && {
-        home_logo() {
-          return <Welcome api={api} name={options.name} />
-        },
-        // The banner already shows the directory and version, and Claude Code has
-        // no footer, so replace OpenCode's home footer with nothing.
-        home_footer() {
-          return <box />
-        },
-      }),
-      ...(options.prompt && {
-        home_prompt(_ctx, props) {
-          return <HomePrompt api={api} ref={props.ref} />
-        },
-      }),
-      ...((options.prompt || options.spinner || options.transcript || options.usage) && {
-        session_prompt(_ctx, props) {
-          return (
-            <SessionPrompt
-              api={api}
-              spinner={options.spinner}
-              restyle={options.prompt}
-              transcript={options.transcript}
-              usage={options.usage}
-              session_id={props.session_id}
-              visible={props.visible}
-              disabled={props.disabled}
-              on_submit={props.on_submit}
-              ref={props.ref}
-            />
-          )
-        },
-      }),
-    },
-  })
-}
-
-const plugin: TuiPluginModule & { id: string } = {
+export default Plugin.define({
   id: "opencode-claude-style",
-  tui,
-}
+  setup(context) {
+    const options = readOptions(context.options)
+    installTheme({ activate: options.activateTheme })
 
-export default plugin
+    const claims: Array<() => void> = []
+    if (options.banner || options.prompt) {
+      // The home screen has no slot for its logo or prompt, so this takes over the
+      // footer (which the banner makes redundant) and works from there.
+      claims.push(
+        context.ui.slot({
+          replace: "home.footer",
+          render: () => <HomeChrome context={context} options={options} />,
+        }),
+      )
+    }
+    if (options.prompt || options.usage) {
+      claims.push(
+        context.ui.slot({
+          prepend: "prompt.footer",
+          render: (input) => <PromptChrome context={context} options={options} input={input} />,
+        }),
+      )
+    }
+    if (options.spinner || options.transcript) {
+      claims.push(
+        context.ui.slot({
+          prepend: "session.composer.top",
+          render: (input) => <Status context={context} options={options} sessionID={input.sessionID} />,
+        }),
+      )
+    }
+    if (options.transcript) {
+      claims.push(context.ui.slot({ append: "app", render: () => <ExpandKey context={context} /> }))
+    }
+    return () => {
+      for (const release of claims) release()
+    }
+  },
+})

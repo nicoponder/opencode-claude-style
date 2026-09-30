@@ -1,9 +1,9 @@
 /** @jsxImportSource @opentui/solid */
-import type { Renderable, TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { TextAttributes, type RGBA } from "@opentui/core"
-import type { JSX } from "@opentui/solid"
-import { type Accessor, createRoot, createSignal, getOwner, onCleanup, onMount, Show } from "solid-js"
+import type { Plugin } from "@opencode/plugin/tui"
+import type { RGBA, Renderable } from "@opentui/core"
+import { createSignal, getOwner, onCleanup, onMount, Show } from "solid-js"
 import path from "node:path"
+import { type Detached, detach } from "./detach"
 import {
   commandHint,
   commandKind,
@@ -13,73 +13,89 @@ import {
   type ToolKind,
   turnOf,
   turnVerb,
+  type TurnMessage,
 } from "./format"
-import { blankBar, drawn, firstText, interceptSetter, onBeforeRender, textOf } from "./tree"
+import { blankBar, debug, drawn, find, idOf, interceptSetter, onBeforeRender, placeBefore, placeIn, textOf } from "./tree"
+
+type Context = Plugin.Context
 
 /**
  * Whether tool calls and thinking are expanded, like Claude Code's ctrl+o. Shared
  * by every session view, as Claude Code's is.
  */
 const [expanded, setExpanded] = createSignal(false)
+export { expanded }
 
 export const EXPAND_COMMAND = "claude.transcript.expand"
+const THINKING_COMMAND = "session.toggle.thinking"
+
+/** Whether OpenCode is hiding thinking: its toggle offers to expand it. */
+function thinkingHidden(context: Context) {
+  return context.keymap.commands().find((command) => command.id === THINKING_COMMAND)?.title === "Expand thinking"
+}
 
 /**
- * Bind ctrl+o to expand or collapse tool calls and thinking. Expanding also turns
- * on OpenCode's own thinking display if it was collapsed, and collapsing puts it
- * back the way it was.
+ * ctrl+o expands or collapses tool calls and thinking, in sessions (OpenCode's
+ * own ctrl+o, its recent-sessions menu, still works on the home screen). Expanding
+ * also turns on OpenCode's thinking display if it was hidden, and collapsing puts
+ * it back. Rebind it in cli.json's keybinds under "claude.transcript.expand".
  */
-export function registerExpandKey(api: TuiPluginApi) {
-  let restoreThinking: string | undefined
-  const unregister = api.keymap.registerLayer({
+export function ExpandKey(props: { context: Context }) {
+  const context = props.context
+  let restoreThinking = false
+  const toggleThinking = () => context.keymap.dispatch(THINKING_COMMAND)
+  context.keymap.layer(() => ({
+    priority: 10,
+    enabled: () => context.ui.router.current().type === "session",
     commands: [
       {
-        name: EXPAND_COMMAND,
-        title: "Expand or collapse tool calls",
-        category: "Session",
+        id: EXPAND_COMMAND,
+        title: expanded() ? "Collapse tool calls and thinking" : "Expand tool calls and thinking",
+        group: "Session",
+        bind: "ctrl+o",
+        palette: true,
         run() {
           const next = !expanded()
           setExpanded(next)
-          if (next && api.kv.get("thinking_mode", "hide") === "hide") {
-            restoreThinking = "hide"
-            api.kv.set("thinking_mode", "show")
+          if (next && thinkingHidden(context)) {
+            restoreThinking = true
+            toggleThinking()
           } else if (!next && restoreThinking) {
-            api.kv.set("thinking_mode", restoreThinking)
-            restoreThinking = undefined
+            restoreThinking = false
+            if (!thinkingHidden(context)) toggleThinking()
           }
         },
       },
     ],
-    bindings: [{ key: "ctrl+o", cmd: EXPAND_COMMAND }],
+    bindings: [EXPAND_COMMAND],
+  }))
+  // Don't leave OpenCode's thinking expanded because of us.
+  onCleanup(() => {
+    if (restoreThinking && !thinkingHidden(context)) toggleThinking()
+    restoreThinking = false
   })
-  return () => {
-    unregister()
-    // Don't leave OpenCode's thinking expanded because of us.
-    if (restoreThinking) api.kv.set("thinking_mode", restoreThinking)
-  }
+  return null
 }
+
+/** The parts of an OpenCode session message the transcript reads. */
+type Part = {
+  type: string
+  id?: string
+  name?: string
+  text?: string
+  state?: { status?: string; input?: unknown }
+  time?: { created?: number; completed?: number }
+}
+type Message = Omit<TurnMessage, "content"> & { agent?: string; content?: ReadonlyArray<Part> }
 
 /** What a row of OpenCode's transcript turned out to be. */
 type Row =
-  | { type: "user" | "text" | "reasoning" | "footer" | "loaded" | "empty" | "unsettled" | "other" }
-  | { type: "tool"; kind: ToolKind; active: boolean; detail?: string }
+  | { type: "user"; messageID: string }
+  | { type: "text"; messageID?: string; partID?: string }
+  | { type: "reasoning" | "footer" | "empty" | "unsettled" | "other" }
+  | { type: "tool"; kinds: ToolKind[]; active: boolean }
 
-
-/** OpenCode's glyph for each inline tool row it draws. */
-const icons: Record<string, ToolKind | undefined> = { $: "bash", "✱": "search", "%": "fetch", "◈": "websearch" }
-
-/** The placeholder OpenCode shows before a tool's input has streamed in. */
-const pending: Record<string, ToolKind> = {
-  "Writing command…": "bash",
-  "Reading file…": "read",
-  "Finding files…": "search",
-  "Searching content…": "search",
-  "Fetching from the web…": "fetch",
-  "Searching web…": "websearch",
-  "Loading skill…": "skill",
-}
-
-type Decoration = { node: Renderable; set: (data: unknown) => void; dispose: () => void; used: boolean }
+type Decoration = Detached<unknown> & { used: boolean }
 
 /**
  * A reply's markdown, held back to its last finished line while it streams.
@@ -92,6 +108,27 @@ const MIN_HINT_MS = 700
 /** Claude Code's in-progress ⏺ is on for this long, then off for as long. */
 const BLINK_MS = 600
 
+/** OpenCode's tools that fold into a summary line, and what each counts as. */
+const foldable: Record<string, (input: Record<string, unknown>) => ToolKind> = {
+  bash: (input) => commandKind(typeof input.command === "string" ? input.command : ""),
+  shell: (input) => commandKind(typeof input.command === "string" ? input.command : ""),
+  read: () => "read",
+  list: () => "list",
+  glob: () => "search",
+  grep: () => "search",
+  webfetch: () => "fetch",
+  websearch: () => "websearch",
+  skill: () => "skill",
+}
+
+/** The words OpenCode's "Explored: 2 reads, 1 search" label counts in, as summary kinds. */
+const explored: Record<string, ToolKind> = { read: "read", search: "search", fetch: "fetch", list: "list" }
+
+/** "build" → "Build", as OpenCode titles agents in its footer. */
+function titlecase(text: string) {
+  return text.replace(/(^|[\s_-])(\w)/g, (_, sep: string, c: string) => sep + c.toUpperCase())
+}
+
 /**
  * Restyle OpenCode's session transcript like Claude Code's, and pace it the way
  * Claude Code does:
@@ -100,22 +137,22 @@ const BLINK_MS = 600
  * - Replies get a `⏺` bullet. While a reply streams, only its finished lines
  *   show, so prose arrives a paragraph at a time rather than word by word.
  * - Runs of reads, searches, and shell commands fold into one line such as
- *   "⏺ Read 2 files, ran 1 shell command (ctrl+o to expand)". A run stays "in
- *   progress" (present tense, blinking ⏺, "⎿ $ command" underneath) until the
- *   reply moves on, so it doesn't flip back and forth between calls, and each
- *   command stays up long enough to read. Edits, subagents, todos, questions,
- *   and failed calls stay as OpenCode draws them.
+ *   "Read 2 files, ran 1 shell command". A run stays "in progress" (present
+ *   tense, blinking ⏺, "⎿ $ command" underneath) until the reply moves on, so it
+ *   doesn't flip back and forth between calls, and each command stays up long
+ *   enough to read. Edits, subagents, todos, questions, and failed calls stay as
+ *   OpenCode draws them.
  * - Thinking is hidden until ctrl+o, as in Claude Code, where the spinner line
  *   says when the model is thinking.
- * - OpenCode's "▣ Build · model · 12s" line after each reply becomes
+ * - OpenCode's "Build · model · 12s" line after each reply becomes
  *   "✻ Worked for 12s · done 4:00 PM", or "⎿ Interrupted".
  *
  * OpenCode gives plugins no hook into the transcript, so this reads what it drew
  * and adjusts it just before each frame is drawn. Anything it doesn't recognize
  * is left as OpenCode drew it.
  */
-export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor: () => Renderable | undefined) {
-  const theme = () => api.theme.current
+export function useTranscript(context: Context, sessionID: () => string, anchor: () => Renderable | undefined) {
+  const theme = () => context.theme
   const [blink, setBlink] = createSignal(true)
   const decorations = new Map<string, Decoration>()
   const ours = new WeakSet<Renderable>()
@@ -133,7 +170,7 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
   const kids = (node: Renderable) => drawn(node).filter((child) => !ours.has(child))
 
   /** Create (once) and return a node of ours, re-rendered from `data` each pass. */
-  function decoration<T>(key: string, data: T, make: (data: Accessor<T>) => JSX.Element) {
+  function decoration<T>(key: string, data: T, make: (data: () => T) => unknown) {
     let d = decorations.get(key)
     if (d?.node.isDestroyed) {
       d.dispose()
@@ -141,11 +178,7 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
       d = undefined
     }
     if (!d) {
-      d = createRoot((dispose) => {
-        const [get, set] = createSignal(data, { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) })
-        const node = make(get) as unknown as Renderable
-        return { node, set: (v: unknown) => set(() => v as T), dispose, used: true }
-      }, owner)
+      d = { ...(detach(owner, data, make) as Detached<unknown>), used: true }
       ours.add(d.node)
       decorations.set(key, d)
     }
@@ -157,23 +190,6 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
   function hide(node: Renderable, next: Set<Renderable>) {
     if (node.visible) node.visible = false
     next.add(node)
-  }
-
-  function placeBefore(node: Renderable, anchor: Renderable) {
-    const parent = anchor.parent
-    if (!parent) return
-    const children = parent.getChildren()
-    if (node.parent === parent && children.indexOf(node) === children.indexOf(anchor) - 1) return
-    node.parent?.remove(node)
-    parent.insertBefore(node, anchor)
-  }
-
-  function placeIn(node: Renderable, parent: Renderable, index?: number) {
-    if (node.parent === parent) {
-      if (index === undefined || parent.getChildren()[index] === node) return
-      parent.remove(node)
-    } else node.parent?.remove(node)
-    parent.add(node, index)
   }
 
   /**
@@ -223,6 +239,56 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
     return row
   }
 
+  /** Recognize a row of OpenCode's transcript, from its ID and what it drew. */
+  function classify(node: Renderable, byID: Map<string, Message>, agents: Set<string>): Row {
+    const id = idOf(node)
+    const ref = /^session-part:([^:]+):(.+)$/.exec(id)
+    const message = byID.get(ref ? ref[1] : id)
+    if (!ref && message?.type === "user") return { type: "user", messageID: message.id }
+    const body = kids(node)
+    if (!body.length) return { type: "empty" }
+    const first = body[0]
+    // A reply's text: a padded box holding the markdown.
+    if (idOf(kids(first)[0]).startsWith("markdown")) {
+      if (ref) return { type: "text", messageID: ref[1], partID: ref[2] }
+      const ordinal = message?.content?.filter((p) => p.type === "text").findIndex((p) => p.text?.trim())
+      return {
+        type: "text",
+        messageID: message?.id,
+        partID: ordinal !== undefined && ordinal >= 0 ? `text:${ordinal}` : undefined,
+      }
+    }
+    const label = leadingText(node)
+    if (/^(?:[+\-−] )?(?:Thought|Thinking)\b/.test(label)) return { type: "reasoning" }
+    const group = /^(?:[→✱] )?(Explored|Exploring): (.+)$/.exec(label)
+    if (group) {
+      const kinds = group[2].split(", ").flatMap((item) => {
+        const match = /^(\d+) (\w+?)(?:e?s)?$/.exec(item)
+        const kind = match && explored[match[2]]
+        return kind ? Array<ToolKind>(Number(match[1])).fill(kind) : []
+      })
+      return kinds.length ? { type: "tool", kinds, active: group[1] === "Exploring" } : { type: "other" }
+    }
+    for (const agent of agents) {
+      if (label === agent || label.startsWith(`${agent} · `)) return { type: "footer" }
+    }
+    // A tool call: its part, from the row's ID, or the message's first part when
+    // OpenCode labels the row with the message instead.
+    const part = ref
+      ? resolvePart(message, ref[2])
+      : message?.type === "assistant"
+        ? message.content?.find((p) => p.type !== "reasoning" && (p.type !== "text" || p.text?.trim()))
+        : undefined
+    if (part?.type === "tool" && part.name) {
+      const kind = foldable[part.name.toLowerCase()]
+      const status = part.state?.status
+      if (!kind || status === "error") return { type: "other" }
+      const input = part.state?.input && typeof part.state.input === "object" ? (part.state.input as Record<string, unknown>) : {}
+      return { type: "tool", kinds: [kind(input)], active: status === "streaming" || status === "running" }
+    }
+    return { type: "other" }
+  }
+
   const sync = () => {
     const host = anchor()
     if (!host || host.isDestroyed) return
@@ -233,21 +299,22 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
     for (const d of decorations.values()) d.used = false
     const next = new Set<Renderable>()
     const t = theme()
-    const messages = api.state.session.messages(sessionID())
+    const id = sessionID()
+    const messages = context.data.session.message.list(id) as ReadonlyArray<Message>
     const byID = new Map(messages.map((m) => [m.id, m]))
-    const status = api.state.session.status(sessionID())
-    const busy = !!status && status.type !== "idle"
-    const latestUser = [...messages].reverse().find((m) => m.role === "user")
-    const streaming = busy ? streamingText(api, messages) : undefined
+    const agents = new Set(messages.flatMap((m) => (m.type === "assistant" && m.agent ? [titlecase(m.agent)] : [])))
+    const busy = context.data.session.status(id) === "running"
+    const latestUser = messages.findLast((m) => m.type === "user")
+    const streaming = busy ? streamingText(messages) : undefined
+    const directory = context.data.session.get(id)?.location.directory
     const footers = new Map<string, Renderable[]>()
     const rows = scroll
       .getChildren()
       .filter((node) => !ours.has(node))
-      .map((node) => ({ node, row: settle(node, classify(node, kids, t.error)) }))
-    const lastText = [...rows].reverse().find((r) => r.row.type === "text")?.node
+      .map((node) => ({ node, row: settle(node, classify(node, byID, agents)) }))
     const stillGated = new Set<Gate>()
 
-    let user: (typeof messages)[number] | undefined
+    let user: Message | undefined
     let group = 0
     let run: { node: Renderable; row: Row }[] = []
 
@@ -259,18 +326,20 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
         for (const r of run) hide(r.node, next)
         const key = `${user?.id ?? "start"}:${group++}`
         const active = tools.some((tool) => tool.active) || (atEnd && busy && user?.id === latestUser?.id)
-        const kinds = tools.map((tool) => (tool.kind === "bash" ? commandKind(tool.detail ?? "") : tool.kind))
-        const text = summarizeTools(kinds, active)
+        const text = summarizeTools(
+          tools.flatMap((tool) => tool.kinds),
+          active,
+        )
         // While it runs, Claude Code heads the run with what the latest call says
         // it's doing, and shows its command, file, or pattern underneath.
-        const latest = active && user ? latestCall(api, messages, user.id) : undefined
+        const latest = active && user ? latestCall(messages, user.id, directory) : undefined
         const summary = {
           text: latest?.description ?? text,
           active,
           detail: active ? holdHint(key, latest?.hint) : undefined,
         }
         placeBefore(
-          decoration(`summary:${key}`, summary, (data) => <ToolSummary api={api} data={data()} blink={blink()} />),
+          decoration(`summary:${key}`, summary, (data) => <ToolSummary context={context} data={data()} blink={blink()} />),
           run[0].node,
         )
       }
@@ -288,13 +357,12 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
     }
 
     for (const { node, row } of rows) {
-      // A spacer, or a row OpenCode hasn't finished filling in (kept out of sight).
       if (row.type === "empty") continue
       if (row.type === "unsettled") {
         hide(node, next)
         continue
       }
-      if (row.type === "tool" || row.type === "loaded") {
+      if (row.type === "tool") {
         run.push({ node, row })
         continue
       }
@@ -308,10 +376,11 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
         continue
       }
       if (row.type === "text") {
-        const markdown = kids(node)[0]
+        const markdown = find(node, (n) => idOf(n).startsWith("markdown"))
         const g = markdown && gate(markdown)
         if (g) {
-          g.source = streaming && node === lastText ? streaming : undefined
+          const source = streaming && row.messageID === streaming.messageID && row.partID === streaming.partID
+          g.source = source ? streaming.text : undefined
           if (g.source) stillGated.add(g)
           g.apply()
           // Nothing finished yet: show nothing, and don't end the run above.
@@ -323,18 +392,21 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
       }
       flush(false)
       if (row.type === "user") {
-        user = byID.get(node.id)
+        user = byID.get(row.messageID)
         group = 0
         restyleUser(node)
       } else if (row.type === "text") {
-        placeIn(
-          decoration(`bullet:${node.id}`, null, () => (
-            <text position="absolute" left={1} top={0} fg={theme().text} selectable={false}>
-              ⏺
-            </text>
-          )),
-          node,
-        )
+        const body = kids(node)[0]
+        if (body) {
+          placeIn(
+            decoration(`bullet:${node.id}:${row.partID ?? ""}`, null, () => (
+              <text position="absolute" left={1} top={0} fg={theme().text.base} selectable={false}>
+                ⏺
+              </text>
+            )),
+            body,
+          )
+        }
       }
     }
     flush(true)
@@ -348,7 +420,7 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
     gated.clear()
     for (const g of stillGated) gated.add(g)
 
-    // OpenCode can end a turn with more than one "▣" line; only the last one gets
+    // OpenCode can end a turn with more than one footer; only the last one gets
     // the turn's summary, as Claude Code prints one per turn.
     for (const [userID, nodes] of footers) {
       const owner = byID.get(userID)!
@@ -369,13 +441,18 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
               }
             : undefined
       if (!line) {
-        hide(last, next)
+        // A failed turn keeps OpenCode's footer, with its error.
+        if (running) hide(last, next)
         continue
       }
-      const original = kids(last)[0]
-      if (original) hide(original, next)
+      // OpenCode's footer line is the one that starts with the agent's name; an
+      // error or retry notice above it stays.
+      for (const child of kids(last)) {
+        const text = leadingText(child)
+        if ([...agents].some((agent) => text === agent || text.startsWith(`${agent} · `))) hide(child, next)
+      }
       placeIn(
-        decoration(`turn:${last.id}`, line, (data) => <TurnLine api={api} line={data()} />),
+        decoration(`turn:${userID}`, line, (data) => <TurnLine context={context} line={data()} />),
         last,
       )
     }
@@ -386,19 +463,25 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
     hidden = next
     for (const [key, d] of decorations) {
       if (d.used) continue
-      d.node.parent?.remove(d.node)
-      if (!d.node.isDestroyed) d.node.destroyRecursively()
       d.dispose()
       decorations.delete(key)
     }
     for (const key of hints.keys()) if (!decorations.has(`summary:${key}`)) hints.delete(key)
   }
 
+  const safeSync = () => {
+    try {
+      sync()
+    } catch (error) {
+      debug("transcript sync failed", error)
+    }
+  }
+
   onMount(() => {
     // Restyle just before every frame is drawn, so new rows never show unstyled,
     // even for a frame. The timer keeps the blink going when nothing else redraws.
-    const stop = onBeforeRender(api.renderer.root, sync)
-    const timer = setInterval(sync, 100)
+    const stop = onBeforeRender(context.renderer.root, safeSync)
+    const timer = setInterval(safeSync, 100)
     onCleanup(() => {
       stop()
       clearInterval(timer)
@@ -407,11 +490,7 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
         g.apply()
       }
       for (const node of hidden) if (!node.isDestroyed) node.visible = true
-      for (const d of decorations.values()) {
-        d.node.parent?.remove(d.node)
-        if (!d.node.isDestroyed) d.node.destroyRecursively()
-        d.dispose()
-      }
+      for (const d of decorations.values()) d.dispose()
       decorations.clear()
     })
   })
@@ -421,17 +500,18 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
    * draws them in a padded box with the agent's colored bar down the left.
    */
   function restyleUser(node: Renderable) {
-    const body = kids(node)[0]
-    if (!body) return
+    const box = kids(node)[0]
+    const body = box && kids(box).at(-1)
+    if (!box || !body) return
     if (!restyled.has(node)) {
       restyled.add(node)
-      blankBar(node)
+      blankBar(box)
       body.paddingTop = 0
       body.paddingBottom = 0
     }
     placeIn(
       decoration(`prompt:${node.id}`, null, () => (
-        <text position="absolute" left={0} top={0} fg={theme().borderSubtle} selectable={false}>
+        <text position="absolute" left={0} top={0} fg={theme().text.muted} selectable={false}>
           ❯
         </text>
       )),
@@ -440,118 +520,93 @@ export function useTranscript(api: TuiPluginApi, sessionID: () => string, anchor
   }
 }
 
+/** Joined text of the first few text nodes in a row, so "+" and "Thought · 3s" read as "+ Thought · 3s". */
+function leadingText(node: Renderable) {
+  const texts: string[] = []
+  const walk = (n: Renderable, depth: number) => {
+    if (texts.length >= 3 || idOf(n).startsWith("spinner")) return
+    const text = textOf(n)
+    if (text !== undefined) {
+      if (text.trim()) texts.push(text.trim())
+      return
+    }
+    if (depth < 6) for (const child of drawn(n)) walk(child, depth + 1)
+  }
+  walk(node, 0)
+  return texts.join(" ")
+}
+
 /** Whether any text in a row is still blank. */
 function hasBlankText(node: Renderable, depth = 0): boolean {
   if (textOf(node) === "") return true
   return depth < 5 && drawn(node).some((child) => hasBlankText(child, depth + 1))
 }
 
-/**
- * The transcript is the scroll box beside the prompt: the session column holds
- * the scroll box, then the box the prompt slot renders into.
- */
-function findTranscript(from: Renderable) {
-  for (let node = from, depth = 0; node.parent && depth < 4; node = node.parent, depth++) {
-    const scroll = node.parent.getChildren().find((child) => child !== node && child.id.startsWith("scrollbox"))
-    if (scroll) return scroll
-  }
+/** A part of an assistant message, by OpenCode's part ID: a tool call's ID, or "text:N" / "reasoning:N". */
+function resolvePart(message: Message | undefined, partID: string) {
+  const content = message?.content ?? []
+  const tool = content.find((part) => part.type === "tool" && part.id === partID)
+  if (tool) return tool
+  const match = /^(text|reasoning):(\d+)$/.exec(partID)
+  return match ? content.filter((part) => part.type === match[1])[Number(match[2])] : undefined
 }
 
 /**
- * Recognize a row of OpenCode's transcript from what it drew. Tool rows are the
- * inline ones (icon, then a description), the placeholder shown while a tool's
- * input streams in, or the panel a shell command's output goes in.
+ * The transcript is the scroll box above the prompt. The box our slot renders
+ * into also holds the prompt and its autocomplete list (another scroll box), so
+ * look from the level above it: the transcript is in a sibling there.
  */
-function classify(node: Renderable, kids: (node: Renderable) => Renderable[], error: RGBA): Row {
-  if (node.id.startsWith("msg_")) return { type: "user" }
-  const first = kids(node)[0]
-  if (!first) return { type: "empty" }
-  if (first.id.startsWith("markdown")) return { type: "text" }
-  const text = textOf(first)
-  if (text !== undefined) {
-    if (text.startsWith("▣")) return { type: "footer" }
-    if (text.startsWith("↳ Loaded")) return { type: "loaded" }
-    const kind = pending[text.replace(/^~ /, "")]
-    if (text.startsWith("~ ") && kind) return { type: "tool", kind, active: true }
-  }
-  const label = firstText(first)
-  if (label !== undefined && /^([+-] )?Thought\b|^Thinking\b/.test(label)) return { type: "reasoning" }
-
-  // OpenCode's spinner, then what's running: a file being read, or (inside the
-  // shell panel below) a command.
-  const spinning = (row: Renderable | undefined) => {
-    const cells = row ? kids(row) : []
-    return cells.length === 2 && cells[0].id.startsWith("spinner") ? textOf(cells[1]) : undefined
-  }
-  const reading = spinning(first)
-  if (reading?.startsWith("Read ")) return { type: "tool", kind: "read", active: true, detail: reading.trim() }
-
-  // An inline row: a row box holding a two-column icon, then the description.
-  const cells = kids(first)
-  const icon = textOf(cells[0])?.trim()
-  const body = textOf(cells[1])
-  if (icon && body !== undefined && cells.length === 2) {
-    const fg = (cells[0] as { fg?: RGBA }).fg
-    const attributes = (cells[0] as { attributes?: number }).attributes ?? 0
-    if (fg?.equals(error) || attributes & TextAttributes.STRIKETHROUGH) return { type: "other" }
-    const kind = icon === "→" ? (body.startsWith("Read ") ? "read" : "skill") : icons[icon]
-    if (kind) return { type: "tool", kind, active: false, detail: body.trim() }
-  }
-
-  // A shell command's output panel: "$ command" (or the spinner and the command
-  // while it runs), then the output.
-  if (Array.isArray((node as { border?: unknown }).border)) {
-    for (const panel of kids(node)) {
-      const top = kids(panel)[0]
-      const line = textOf(top)
-      if (line?.startsWith("$ ")) return { type: "tool", kind: "bash", active: false, detail: line.slice(2) }
-      const command = spinning(top)
-      if (command !== undefined) return { type: "tool", kind: "bash", active: true, detail: command }
+function findTranscript(from: Renderable) {
+  const composer = from.parent
+  if (!composer) return
+  for (let node = composer, depth = 0; node.parent && depth < 4; node = node.parent, depth++) {
+    for (const sibling of node.parent.getChildren()) {
+      if (sibling === node) continue
+      const scroll = find(sibling, (n) => "verticalScrollBar" in n && "content" in n)
+      if (scroll) return scroll
     }
   }
-  return { type: "other" }
 }
 
 /**
  * The text a reply is streaming right now, if it's writing text (rather than
  * thinking or calling a tool): read fresh each time, since it grows between passes.
  */
-function streamingText(api: TuiPluginApi, messages: ReadonlyArray<{ id: string; role: string }>) {
-  const reply = [...messages].reverse().find((m) => m.role === "assistant")
-  if (!reply) return
-  const latest = () =>
-    [...api.state.part(reply.id)].reverse().find((p) => p.type === "text" || p.type === "reasoning" || p.type === "tool")
-  const part = latest()
-  if (part?.type !== "text" || part.time?.end !== undefined) return
-  return () => {
-    const now = latest()
-    return now?.type === "text" ? now.text : ""
-  }
+function streamingText(messages: ReadonlyArray<Message>) {
+  const reply = messages.findLast((m) => m.type === "assistant")
+  if (!reply || reply.time.completed !== undefined) return
+  const content = reply.content ?? []
+  const latest = content.at(-1)
+  if (latest?.type !== "text") return
+  const ordinal = content.filter((p) => p.type === "text").length - 1
+  return { messageID: reply.id, partID: `text:${ordinal}`, text: () => latest.text ?? "" }
 }
 
 /**
- * The latest tool call in a turn, from OpenCode's state: what it says it's doing
- * (a shell command's description) and the hint to show under the run, as Claude
- * Code picks it: the file, the pattern, or the command.
+ * The latest tool call in a turn: what it says it's doing (a shell command's
+ * description) and the hint to show under the run, as Claude Code picks it: the
+ * file, the pattern, or the command.
  */
-function latestCall(api: TuiPluginApi, messages: ReadonlyArray<{ id: string; role: string }>, userID: string) {
-  const replies = messages.filter((m) => m.role === "assistant" && (m as { parentID?: string }).parentID === userID)
-  const part = replies
-    .flatMap((m) => api.state.part(m.id))
-    .reverse()
-    .find((p) => p.type === "tool")
-  if (part?.type !== "tool") return
-  const input = (part.state.input ?? {}) as Record<string, unknown>
+function latestCall(messages: ReadonlyArray<Message>, userID: string, directory: string | undefined) {
+  const start = messages.findIndex((m) => m.id === userID)
+  const end = messages.findIndex((m, i) => i > start && m.type === "user")
+  const part = messages
+    .slice(start + 1, end === -1 ? undefined : end)
+    .flatMap((m) => (m.type === "assistant" ? (m.content ?? []) : []))
+    .findLast((p) => p.type === "tool")
+  if (!part?.name) return
+  const input = (part.state?.input && typeof part.state.input === "object" ? part.state.input : {}) as Record<string, unknown>
   const str = (key: string) => (typeof input[key] === "string" && input[key] ? (input[key] as string) : undefined)
-  const file = str("filePath")
-  const relative = file && path.relative(api.state.path.directory, file)
+  const file = str("filePath") ?? str("path")
+  const relative = file && directory ? path.relative(directory, file) : undefined
+  const shell = part.name === "bash" || part.name === "shell"
   const hint =
-    part.tool === "bash" && str("command")
+    shell && str("command")
       ? commandHint(str("command")!)
       : relative && !relative.startsWith("..")
         ? relative
         : (file ?? (str("pattern") ? `"${str("pattern")}"` : (str("url") ?? str("query") ?? str("name"))))
-  return { description: part.tool === "bash" ? str("description") : undefined, hint }
+  return { description: shell ? str("description") : undefined, hint }
 }
 
 /**
@@ -559,34 +614,30 @@ function latestCall(api: TuiPluginApi, messages: ReadonlyArray<{ id: string; rol
  * latest command, file, or pattern under a ⎿. Once done, Claude Code leaves just
  * the dimmed summary, lined up with the replies' text.
  */
-function ToolSummary(props: {
-  api: TuiPluginApi
-  data: { text: string; active: boolean; detail?: string }
-  blink: boolean
-}) {
-  const theme = () => props.api.theme.current
+function ToolSummary(props: { context: Context; data: { text: string; active: boolean; detail?: string }; blink: boolean }) {
+  const theme = () => props.context.theme
   return (
     <box flexDirection="column" marginTop={1} paddingLeft={1} flexShrink={0}>
       <Show
         when={props.data.active}
         fallback={
-          <text fg={theme().textMuted} selectable={false}>
+          <text fg={theme().text.muted} selectable={false}>
             {"  "}
             {props.data.text}
           </text>
         }
       >
         <text selectable={false}>
-          <span style={{ fg: theme().textMuted }}>{props.blink ? "⏺ " : "  "}</span>
-          <span style={{ fg: theme().text }}>{props.data.text}</span>
+          <span style={{ fg: theme().text.muted }}>{props.blink ? "⏺ " : "  "}</span>
+          <span style={{ fg: theme().text.base }}>{props.data.text}</span>
         </text>
         <Show when={props.data.detail}>
-          {(detail) => (
+          {(detail: () => string) => (
             <box flexDirection="row">
-              <text fg={theme().textMuted} width={5} flexShrink={0} selectable={false}>
+              <text fg={theme().text.muted} width={5} flexShrink={0} selectable={false}>
                 {"  ⎿  "}
               </text>
-              <text fg={theme().textMuted} flexGrow={1} selectable={false}>
+              <text fg={theme().text.muted} flexGrow={1} selectable={false}>
                 {detail()}
               </text>
             </box>
@@ -598,30 +649,31 @@ function ToolSummary(props: {
 }
 
 function TurnLine(props: {
-  api: TuiPluginApi
+  context: Context
   line: { kind: "done"; verb: string; took: string; at: string } | { kind: "interrupted" }
 }) {
-  const theme = () => props.api.theme.current
-  const line = () => props.line
+  const theme = () => props.context.theme
+  const done = () => (props.line.kind === "done" ? props.line : undefined)
+  const errorColor = (): RGBA => theme().text.feedback.error.base
   return (
-    <box flexDirection="column" flexShrink={0}>
+    <box flexDirection="column" flexShrink={0} paddingLeft={1}>
       <Show
-        when={line().kind === "done" && (line() as { verb: string; took: string; at: string })}
+        when={done()}
         fallback={
           <text wrapMode="none" selectable={false}>
-            <span style={{ fg: theme().textMuted }}>{"⎿  "}</span>
-            <span style={{ fg: theme().error }}>Interrupted</span>
-            <span style={{ fg: theme().textMuted }}> · What should OpenCode do instead?</span>
+            <span style={{ fg: theme().text.muted }}>{"  ⎿  "}</span>
+            <span style={{ fg: errorColor() }}>Interrupted</span>
+            <span style={{ fg: theme().text.muted }}> · What should OpenCode do instead?</span>
           </text>
         }
       >
-        {(done) => (
-          // Out through OpenCode's indent so the ✻ lines up with the ⏺ bullets.
-          <text fg={theme().textMuted} marginTop={1} marginLeft={-2} wrapMode="none" selectable={false}>
-            ✻ {done().verb} for {done().took} · done {done().at}
+        {(line: () => { verb: string; took: string; at: string }) => (
+          <text fg={theme().text.muted} wrapMode="none" selectable={false}>
+            ✻ {line().verb} for {line().took} · done {line().at}
           </text>
         )}
       </Show>
     </box>
   )
 }
+

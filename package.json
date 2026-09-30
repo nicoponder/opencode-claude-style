@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/package.json",
   "name": "opencode-claude-style",
   "version": "0.1.0",
-  "description": "A cosmetic OpenCode theme + TUI plugin that makes OpenCode look like Claude Code: colors, Clawd, the welcome banner, and prompt styling.",
+  "description": "A cosmetic OpenCode theme + CLI plugin that makes OpenCode look like Claude Code: colors, Clawd, the welcome banner, and prompt styling.",
   "type": "module",
   "keywords": [
     "opencode",
@@ -12,16 +12,13 @@
     "tui"
   ],
   "exports": {
-    "./tui": "./src/tui.tsx",
-    "./server": "./src/server.ts"
+    "./tui": "./src/tui.tsx"
   },
-  "oc-themes": [
-    "themes/claude-code.json"
-  ],
   "files": [
     "src",
     "themes",
     "scripts",
+    "tui.ts",
     "README.md"
   ],
   "scripts": {
@@ -30,16 +27,20 @@
     "preview": "./scripts/preview.sh"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.18.0"
+    "@opencode/plugin": ">=2.0.20 <3",
+    "@opentui/core": ">=0.5.12",
+    "@opentui/solid": ">=0.5.12",
+    "solid-js": ">=1.9.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.18.32",
-    "@opentui/core": "^0.4.5",
-    "@opentui/keymap": "^0.4.5",
-    "@opentui/solid": "^0.4.5",
+    "@opencode/client": "2.0.20",
+    "@opencode/plugin": "2.0.20",
+    "@opencode/theme": "2.0.20",
+    "@opentui/core": "0.5.12",
+    "@opentui/solid": "0.5.12",
     "@types/bun": "^1.4.2",
     "@types/node": "^22.0.0",
-    "solid-js": "^1.9.0",
+    "solid-js": "1.9.12",
     "typescript": "^5.6.0"
   }
 }

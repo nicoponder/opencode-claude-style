@@ -1,48 +1,21 @@
-import { readFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
+/** The prompt's selected model, as OpenCode reports it. */
 export type ModelRef = { providerID: string; modelID: string }
-export type ProviderInfo = { id: string; name?: string; models?: Record<string, { name?: string }> }
+export type ModelInfo = { id: string; providerID: string; name?: string; limit?: { context?: number } }
+export type ProviderInfo = { id: string; name?: string }
 
-/**
- * Best-effort "Model · Provider" line, mirroring the order OpenCode itself uses to
- * pick a model: config.model, then the most recently used model, then the first
- * provider's default model.
- */
-export function describeModel(input: {
-  providers: ReadonlyArray<ProviderInfo>
-  configured?: string
-  recent: ReadonlyArray<ModelRef>
-  defaults: Record<string, string>
-}): string | undefined {
-  const candidates: ModelRef[] = []
-  if (input.configured?.includes("/")) {
-    const [providerID, ...rest] = input.configured.split("/")
-    candidates.push({ providerID, modelID: rest.join("/") })
-  }
-  candidates.push(...input.recent)
-  const first = input.providers[0]
-  if (first) {
-    const fallback = input.defaults[first.id] ?? Object.keys(first.models ?? {})[0]
-    if (fallback) candidates.push({ providerID: first.id, modelID: fallback })
-  }
-
-  for (const item of candidates) {
-    const provider = input.providers.find((p) => p.id === item.providerID)
-    const model = provider?.models?.[item.modelID]
-    if (provider && model) return `${model.name ?? item.modelID} · ${provider.name ?? provider.id}`
-  }
-}
-
-export function readRecentModels(stateDir: string | undefined): ModelRef[] {
-  if (!stateDir) return []
-  try {
-    const data = JSON.parse(readFileSync(path.join(stateDir, "model.json"), "utf8")) as { recent?: ModelRef[] }
-    return Array.isArray(data.recent) ? data.recent : []
-  } catch {
-    return []
-  }
+/** "Model · Provider" for the prompt's selected model, with IDs where names are unknown. */
+export function describeModel(
+  selected: ModelRef | undefined,
+  models: ReadonlyArray<ModelInfo>,
+  providers: ReadonlyArray<ProviderInfo>,
+): string | undefined {
+  if (!selected) return
+  const model = models.find((m) => m.providerID === selected.providerID && m.id === selected.modelID)
+  const provider = providers.find((p) => p.id === selected.providerID)
+  return `${model?.name ?? selected.modelID} · ${provider?.name ?? selected.providerID}`
 }
 
 export function safeUsername() {
@@ -94,44 +67,57 @@ export function formatDuration(ms: number) {
   return `${s}s`
 }
 
-/** The fields of an OpenCode message that `lastTurn` needs. */
-export type TurnMessage = {
-  id: string
-  role: "user" | "assistant"
-  parentID?: string
-  time: { created: number; completed?: number }
-  error?: { name: string }
-  tokens?: { output: number; reasoning: number }
-}
-
-/** The fields of an OpenCode message part that `turnProgress` needs. */
+/** A piece of an assistant message's content, as far as the helpers here need it. */
 export type TurnPart = {
   type: string
   text?: string
-  time?: { start?: number; end?: number }
+  time?: { created?: number; completed?: number }
   state?: { input?: unknown }
 }
 
 /**
- * The latest turn in a session: from the last user message until its final reply
- * completed. `end` is missing while the turn is still running, and `failed` is set
- * when a reply errored or was interrupted.
+ * The fields of an OpenCode session message that the turn helpers need. A turn is
+ * a user message and everything after it up to the next one; OpenCode closes it
+ * with an `idle` message saying how it went.
+ */
+export type TurnMessage = {
+  id: string
+  type: string
+  time: { created: number; completed?: number }
+  error?: unknown
+  tokens?: { output: number; reasoning: number }
+  content?: ReadonlyArray<TurnPart>
+  outcome?: "succeeded" | "failed" | "interrupted"
+}
+
+/** The messages of the turn that the user message at `index` started. */
+function messagesOfTurn(messages: ReadonlyArray<TurnMessage>, index: number) {
+  const next = messages.findIndex((m, i) => i > index && m.type === "user")
+  return messages.slice(index + 1, next === -1 ? undefined : next)
+}
+
+/**
+ * The latest turn in a session: from the last user message until OpenCode marked
+ * it idle. `end` is missing while the turn is still running, and `failed` is set
+ * when it errored or was interrupted.
  */
 export function lastTurn(messages: ReadonlyArray<TurnMessage>) {
-  const user = [...messages].reverse().find((m) => m.role === "user")
+  const user = messages.findLast((m) => m.type === "user")
   if (!user) return
   return turnOf(messages, user)
 }
 
 /** The turn that `user` started, as `lastTurn` describes it, plus whether it was interrupted. */
 export function turnOf(messages: ReadonlyArray<TurnMessage>, user: TurnMessage) {
-  const replies = messages.filter((m) => m.role === "assistant" && m.parentID === user.id)
-  const done = replies.length > 0 && replies.every((m) => m.time.completed)
+  const rest = messagesOfTurn(messages, messages.indexOf(user))
+  const idle = rest.find((m) => m.type === "idle")
+  const replies = rest.filter((m) => m.type === "assistant")
+  const completed = replies.flatMap((m) => (m.time.completed ? [m.time.completed] : []))
   return {
     start: user.time.created,
-    end: done ? Math.max(...replies.map((m) => m.time.completed!)) : undefined,
-    failed: replies.some((m) => m.error),
-    interrupted: replies.some((m) => m.error?.name === "MessageAbortedError"),
+    end: idle ? Math.max(idle.time.created, ...completed) : undefined,
+    failed: idle ? idle.outcome !== "succeeded" : replies.some((m) => m.error),
+    interrupted: idle?.outcome === "interrupted",
   }
 }
 
@@ -141,26 +127,28 @@ export function turnOf(messages: ReadonlyArray<TurnMessage>, user: TurnMessage) 
  * OpenCode only counts tokens when each step finishes, so a step in progress is
  * estimated from what has streamed in, at about four characters a token.
  */
-export function turnProgress(messages: ReadonlyArray<TurnMessage>, partsOf: (messageID: string) => ReadonlyArray<TurnPart>) {
-  const user = [...messages].reverse().find((m) => m.role === "user")
-  if (!user) return
-  const replies = messages.filter((m) => m.role === "assistant" && m.parentID === user.id)
+export function turnProgress(messages: ReadonlyArray<TurnMessage>) {
+  const index = messages.findLastIndex((m) => m.type === "user")
+  if (index === -1) return
+  const replies = messagesOfTurn(messages, index).filter((m) => m.type === "assistant")
   let tokens = 0
   for (const reply of replies) {
     const counted = (reply.tokens?.output ?? 0) + (reply.tokens?.reasoning ?? 0)
-    tokens += counted > 0 ? counted : estimateTokens(partsOf(reply.id))
+    tokens += counted > 0 ? counted : estimateTokens(reply.content ?? [])
   }
-  const current = replies.at(-1)
-  const latest = current ? partsOf(current.id).at(-1) : undefined
-  const thinking = latest?.type === "reasoning" && latest.time?.end === undefined
-  return { start: user.time.created, tokens, thinking }
+  const latest = replies.at(-1)?.content?.at(-1)
+  const thinking = latest?.type === "reasoning" && latest.time?.completed === undefined
+  return { start: messages[index].time.created, tokens, thinking }
 }
 
 function estimateTokens(parts: ReadonlyArray<TurnPart>) {
   let chars = 0
   for (const part of parts) {
     if (part.type === "text" || part.type === "reasoning") chars += part.text?.length ?? 0
-    else if (part.type === "tool" && part.state?.input) chars += JSON.stringify(part.state.input).length
+    else if (part.type === "tool" && part.state?.input) {
+      const input = part.state.input
+      chars += typeof input === "string" ? input.length : JSON.stringify(input).length
+    }
   }
   return Math.round(chars / 4)
 }
@@ -266,25 +254,31 @@ export function formatCount(count: number) {
 }
 
 type UsageMessage = {
-  role: string
-  providerID?: string
-  modelID?: string
+  id: string
+  type: string
+  status?: string
+  model?: { providerID: string; id: string }
   tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
 }
-type UsageProvider = { id: string; models: Record<string, { limit?: { context?: number } }> }
 
 /**
- * How full the context is, worked out the way OpenCode's own "15.9K (8%)" is: the
- * latest reply's tokens, as a share of its model's context window.
+ * How full the context is, worked out the way OpenCode's own "15.9K (1%)" is: the
+ * latest reply's tokens since the last compaction (and before `boundary`, a
+ * reverted message, if any), as a share of its model's context window.
  */
-export function contextUsage(messages: ReadonlyArray<UsageMessage>, providers: ReadonlyArray<UsageProvider>) {
-  const reply = [...messages].reverse().find((m) => m.role === "assistant" && (m.tokens?.output ?? 0) > 0)
+export function contextUsage(messages: ReadonlyArray<UsageMessage>, models: ReadonlyArray<ModelInfo>, boundary?: string) {
+  const at = boundary ? messages.findIndex((m) => m.id === boundary) : -1
+  if (boundary && at === -1) return
+  const end = at === -1 ? messages.length : at
+  const compacted = messages.findLastIndex((m, i) => m.type === "compaction" && m.status === "completed" && i < end)
+  const reply = messages.findLast((m, i) => m.type === "assistant" && m.tokens !== undefined && i > compacted && i < end)
   const t = reply?.tokens
-  if (!reply || !t) return
+  if (!reply?.model || !t) return
   const tokens = t.input + t.output + t.reasoning + t.cache.read + t.cache.write
   if (tokens <= 0) return
-  const limit = providers.find((p) => p.id === reply.providerID)?.models[reply.modelID ?? ""]?.limit?.context
-  return { tokens, percent: limit ? Math.round((tokens / limit) * 100) : undefined, providerID: reply.providerID }
+  const { providerID, id } = reply.model
+  const limit = models.find((m) => m.providerID === providerID && m.id === id)?.limit?.context
+  return { tokens, percent: limit ? Math.round((tokens / limit) * 100) : undefined, providerID }
 }
 
 /** A subscription's rolling usage windows, as percentages used. */

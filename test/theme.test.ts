@@ -1,78 +1,96 @@
 import { describe, expect, test } from "bun:test"
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { parseThemeDocument, resolveThemeDocument } from "@opencode/theme/tui"
 import theme from "../themes/claude-code.json"
+import { activate, installTheme, THEME } from "../src/theme"
 
-// Every color key OpenCode's ThemeJson requires (packages/tui/src/theme/index.ts).
-const REQUIRED = [
-  "primary", "secondary", "accent", "error", "warning", "success", "info",
-  "text", "textMuted", "background", "backgroundPanel", "backgroundElement",
-  "border", "borderActive", "borderSubtle",
-  "diffAdded", "diffRemoved", "diffContext", "diffHunkHeader", "diffHighlightAdded",
-  "diffHighlightRemoved", "diffAddedBg", "diffRemovedBg", "diffContextBg", "diffLineNumber",
-  "diffAddedLineNumberBg", "diffRemovedLineNumberBg",
-  "markdownText", "markdownHeading", "markdownLink", "markdownLinkText", "markdownCode",
-  "markdownBlockQuote", "markdownEmph", "markdownStrong", "markdownHorizontalRule",
-  "markdownListItem", "markdownListEnumeration", "markdownImage", "markdownImageText",
-  "markdownCodeBlock",
-  "syntaxComment", "syntaxKeyword", "syntaxFunction", "syntaxVariable", "syntaxString",
-  "syntaxNumber", "syntaxType", "syntaxOperator", "syntaxPunctuation",
-]
-const OPTIONAL = ["selectedListItemText", "backgroundMenu", "thinkingOpacity"]
-
-type Value = string | number | { dark: string; light: string }
-const defs = theme.defs as Record<string, string>
-const colors = theme.theme as unknown as Record<string, Value>
-
-// Mirrors resolveTheme() in OpenCode: hex, "none"/"transparent", or a reference
-// to a def or another theme key, with dark/light variants.
-function resolve(value: Value, mode: "dark" | "light", chain: string[] = []): string {
-  if (typeof value === "number") return `ansi:${value}`
-  if (typeof value === "object") return resolve(value[mode], mode, chain)
-  if (value === "none" || value === "transparent") return "transparent"
-  if (value.startsWith("#")) {
-    if (!/^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(value)) throw new Error(`bad hex ${value}`)
-    return value.toUpperCase()
-  }
-  if (chain.includes(value)) throw new Error(`circular: ${[...chain, value].join(" -> ")}`)
-  const next = defs[value] ?? colors[value]
-  if (next === undefined) throw new Error(`unknown reference "${value}"`)
-  return resolve(next as Value, mode, [...chain, value])
+const hex = (color: { toInts(): number[] }) => {
+  const [r, g, b, a] = color.toInts()
+  const byte = (v: number) => v.toString(16).padStart(2, "0").toUpperCase()
+  return `#${byte(r)}${byte(g)}${byte(b)}${a === 255 ? "" : byte(a)}`
 }
 
 describe("claude-code theme", () => {
-  test("defines every required key and nothing unknown", () => {
-    for (const key of REQUIRED) expect(colors).toHaveProperty(key)
-    for (const key of Object.keys(colors)) expect([...REQUIRED, ...OPTIONAL]).toContain(key)
-  })
-
-  for (const mode of ["dark", "light"] as const) {
-    test(`every color resolves in ${mode} mode`, () => {
-      for (const [key, value] of Object.entries(colors)) {
-        if (key === "thinkingOpacity") continue
-        expect(() => resolve(value, mode)).not.toThrow()
-      }
-    })
-  }
+  // OpenCode's own parser: rejects anything its theme schema doesn't accept.
+  const document = parseThemeDocument(theme, THEME)
+  const dark = resolveThemeDocument(document, "dark")
+  const light = resolveThemeDocument(document, "light")
 
   test("uses Claude Code's signature colors", () => {
-    expect(resolve(colors.primary, "dark")).toBe("#D77757")
-    expect(resolve(colors.primary, "light")).toBe("#D77757")
-    expect(resolve(colors.text, "dark")).toBe("#FFFFFF")
-    expect(resolve(colors.textMuted, "dark")).toBe("#999999")
-    expect(resolve(colors.backgroundPanel, "dark")).toBe("#373737")
-    expect(resolve(colors.success, "dark")).toBe("#4EBA65")
-    expect(resolve(colors.error, "dark")).toBe("#FF6B80")
-    expect(resolve(colors.accent, "dark")).toBe("#48968C")
-    expect(resolve(colors.diffAddedBg, "dark")).toBe("#225C2B")
-    expect(resolve(colors.diffRemovedBg, "dark")).toBe("#7A2936")
+    expect(hex(dark.hue.interactive[200])).toBe("#D77757")
+    expect(hex(light.hue.interactive[200])).toBe("#D77757")
+    expect(hex(dark.text.base)).toBe("#FFFFFF")
+    expect(hex(dark.text.muted)).toBe("#999999")
+    expect(hex(light.text.base)).toBe("#000000")
+    expect(hex(dark.background.raised.base)).toBe("#373737")
+    expect(hex(light.background.raised.base)).toBe("#F0F0F0")
+    expect(hex(dark.text.feedback.success.base)).toBe("#4EBA65")
+    expect(hex(dark.text.feedback.error.base)).toBe("#FF6B80")
+    expect(hex(dark.diff.background.added)).toBe("#225C2B")
+    expect(hex(dark.diff.background.removed)).toBe("#7A2936")
   })
 
-  test("inherits the terminal background like Claude Code", () => {
-    expect(resolve(colors.background, "dark")).toBe("transparent")
-    expect(resolve(colors.background, "light")).toBe("transparent")
+  test("colors build lavender and plan teal when they come first", () => {
+    expect(hex(dark.categorical[0][200])).toBe("#B1B9F9")
+    expect(hex(dark.categorical[1][200])).toBe("#48968C")
+    expect(hex(light.categorical[0][200])).toBe("#5769F7")
+    expect(hex(light.categorical[1][200])).toBe("#006666")
   })
 
-  test("every def is used", () => {
-    const text = JSON.stringify(theme.theme)
-    for (const name of Object.keys(defs)) expect(text).toContain(`"${name}"`)
+  test("inherits the terminal background and leaves the prompt unfilled", () => {
+    for (const t of [dark, light]) {
+      expect(t.background.base.a).toBe(0)
+      // OpenCode fills the prompt with one step below the raised background.
+      expect(t.decrease(t.background.raised.base).a).toBe(0)
+    }
+  })
+})
+
+describe("installTheme", () => {
+  const fresh = () => mkdtempSync(path.join(os.tmpdir(), "oc-claude-theme-"))
+  const target = (dir: string) => path.join(dir, "themes", `${THEME}.json`)
+
+  test("installs the theme and picks it when cli.json has none", () => {
+    const dir = fresh()
+    writeFileSync(path.join(dir, "cli.json"), JSON.stringify({ $schema: "x", tabs: { mode: "on" } }))
+    expect(installTheme({ activate: true }, dir)).toBe(true)
+    expect(JSON.parse(readFileSync(target(dir), "utf8"))).toEqual(theme)
+    expect(JSON.parse(readFileSync(path.join(dir, "cli.json"), "utf8"))).toEqual({
+      $schema: "x",
+      tabs: { mode: "on" },
+      theme: { name: THEME },
+    })
+  })
+
+  test("never overrides a theme you picked, or a theme file you edited", () => {
+    const dir = fresh()
+    writeFileSync(path.join(dir, "cli.json"), JSON.stringify({ theme: { name: "tokyonight", mode: "dark" } }))
+    installTheme({ activate: true }, dir)
+    expect(JSON.parse(readFileSync(path.join(dir, "cli.json"), "utf8")).theme.name).toBe("tokyonight")
+    const edited = { ...theme, base: { ...theme.base, categorical: ["red"] } }
+    writeFileSync(target(dir), JSON.stringify(edited))
+    expect(installTheme({ activate: true }, dir)).toBe(false)
+    expect(JSON.parse(readFileSync(target(dir), "utf8"))).toEqual(edited)
+  })
+
+  test("replaces the old-format copy earlier versions installed, without switching themes", () => {
+    const dir = fresh()
+    mkdirSync(path.join(dir, "themes"), { recursive: true })
+    writeFileSync(target(dir), JSON.stringify({ defs: {}, theme: { primary: "#D77757" } }))
+    expect(installTheme({ activate: true }, dir)).toBe(true)
+    expect(JSON.parse(readFileSync(target(dir), "utf8"))).toEqual(theme)
+    expect(existsSync(path.join(dir, "cli.json"))).toBe(false)
+  })
+
+  test("leaves cli.json alone when activateTheme is off or it isn't plain JSON", () => {
+    const off = fresh()
+    installTheme({ activate: false }, off)
+    expect(existsSync(path.join(off, "cli.json"))).toBe(false)
+    const commented = fresh()
+    writeFileSync(path.join(commented, "cli.json"), "{ // mine\n}")
+    expect(activate(commented)).toBe(false)
+    expect(readFileSync(path.join(commented, "cli.json"), "utf8")).toBe("{ // mine\n}")
   })
 })

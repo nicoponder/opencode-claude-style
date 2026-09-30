@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { contextUsage, formatCount, usageLine } from "../src/format"
-import { parseChatGPTUsage, parseClaudeUsage } from "../src/limits"
+import { type Credential, oauthFor, parseChatGPTUsage, parseClaudeUsage } from "../src/limits"
 
 describe("formatCount", () => {
   test("shortens thousands and millions", () => {
@@ -15,27 +15,53 @@ describe("formatCount", () => {
 
 describe("contextUsage", () => {
   const tokens = (output: number) => ({ input: 10_000, output, reasoning: 400, cache: { read: 4000, write: 500 } })
-  const providers = [{ id: "anthropic", models: { "claude-x": { limit: { context: 200_000 } } } }]
+  const models = [{ id: "claude-x", providerID: "anthropic", limit: { context: 200_000 } }]
+  const reply = (id: string, output: number, model = { providerID: "anthropic", id: "claude-x" }) => ({
+    id,
+    type: "assistant",
+    model,
+    tokens: tokens(output),
+  })
 
-  test("uses the latest reply that produced output", () => {
-    const usage = contextUsage(
-      [
-        { role: "assistant", providerID: "anthropic", modelID: "claude-x", tokens: tokens(100) },
-        { role: "user" },
-        { role: "assistant", providerID: "anthropic", modelID: "claude-x", tokens: tokens(0) },
-      ],
-      providers,
-    )
-    expect(usage).toEqual({ tokens: 15_000, percent: 8, providerID: "anthropic" })
+  test("uses the latest reply with token counts", () => {
+    const usage = contextUsage([reply("a1", 100), { id: "u1", type: "user" }, reply("a2", 600)], models)
+    expect(usage).toEqual({ tokens: 15_500, percent: 8, providerID: "anthropic" })
   })
 
   test("leaves out the percentage for an unknown model", () => {
-    const usage = contextUsage([{ role: "assistant", providerID: "x", modelID: "y", tokens: tokens(100) }], providers)
+    const usage = contextUsage([reply("a1", 100, { providerID: "x", id: "y" })], models)
     expect(usage?.percent).toBeUndefined()
   })
 
+  test("starts over after a compaction and stops at a reverted message", () => {
+    const messages = [reply("a1", 100), { id: "c1", type: "compaction", status: "completed" }, { id: "u1", type: "user" }]
+    expect(contextUsage(messages, models)).toBeUndefined()
+    expect(contextUsage([reply("a1", 100), { id: "u1", type: "user" }, reply("a2", 600)], models, "u1")?.tokens).toBe(15_000)
+  })
+
   test("is undefined before any reply", () => {
-    expect(contextUsage([{ role: "user" }], providers)).toBeUndefined()
+    expect(contextUsage([{ id: "u1", type: "user" }], models)).toBeUndefined()
+  })
+})
+
+describe("oauthFor", () => {
+  const login = (integrationID: string, value: Credential["value"], active = true): Credential => ({
+    integrationID,
+    active,
+    value,
+  })
+
+  test("picks the provider's active subscription login", () => {
+    const credentials = [
+      login("openai", { type: "oauth", access: "old", expires: 1 }, false),
+      login("openai", { type: "oauth", access: "tok", expires: 5, metadata: { accountID: "acct" } }),
+      login("anthropic", { type: "oauth", access: "other" }),
+    ]
+    expect(oauthFor("openai", credentials)).toEqual({ type: "oauth", access: "tok", expires: 5, accountId: "acct" })
+  })
+
+  test("ignores API keys", () => {
+    expect(oauthFor("anthropic", [login("anthropic", { type: "key" })])).toBeUndefined()
   })
 })
 
