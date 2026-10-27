@@ -39,6 +39,8 @@ Key techniques that are easy to break if you don't know about them:
 
 **Pure logic vs. UI.** `src/format.ts` holds the pure, tested helpers (model labels, durations, turn timing, tool-call summaries and shell-command classification). `src/palette.ts` holds Claude Code colors that have no theme token, spinner glyphs, verbs, and tips. `src/data.ts` adapts session messages into the shape these helpers read. Put new testable logic in `format.ts` rather than the components.
 
+**Prompt suggestions** (`src/suggest.tsx`, off by default). An `app` slot component asks for a suggestion after each turn through `context.client.session.generate` (the one-off, out-of-transcript request OpenCode's `/btw` uses; it always runs on the session's model). `PromptChrome` shows it through the placeholder wrapper and inserts it on tab with the textarea's `insertText`.
+
 **Subscription limits.** `src/limits.ts` fetches 5h/7d usage from undocumented `chatgpt.com` / `api.anthropic.com` endpoints, only for `openai`/`anthropic` models with an active OAuth login read through OpenCode's credential API. It never refreshes a login itself, and any failure just omits the limits.
 
 The README's "Known differences" section documents which parts of OpenCode can't be restyled and why. Check it before trying to change something that seems unstyled.

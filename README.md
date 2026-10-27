@@ -28,6 +28,7 @@ work exactly as before. None of Claude Code's features are copied.
 | **Spinner line** | While a session is working, shows `✻ Pondering… (12s · ↓ 1.2k tokens · thinking)` above the prompt, timed from your message, with `⎿  Tip: …` underneath. The glyph cycles through `· ✢ ✳ ✶ ✻ ✽`, the verb is picked at random from a whimsical list, and a highlight sweeps across it. `thinking` shows while the model is reasoning. The tips are OpenCode's own. OpenCode's own progress indicator is still there. |
 | **Usage line** | Left of `ctrl+p commands` under the prompt, OpenCode's `15.9K (8%)` becomes `14.9k \| ctx 25% \| 5h: 48% \| 7d: 6%`: the session's tokens, how full the context is, and, when you're signed in with a ChatGPT Plus/Pro or Claude Pro/Max subscription, how much of its 5-hour and 7-day limits you've used. In a narrow terminal it drops the token count, then the cost, the context, and the 7-day limit to fit. |
 | **Transcript** | Your earlier prompts show as `❯ text` on a gray band instead of in a box with a colored bar, and replies start with `⏺`. OpenCode's `Build · model · 12s` line after each reply becomes `✻ Worked for 12s · done 4:00 PM` (the verb varies, as in Claude Code), or `⎿  Interrupted · What should OpenCode do instead?`. Tool calls and thinking stay as OpenCode draws them. |
+| **Prompt suggestions** | Off unless you turn on the `suggestions` option. After each turn, the session's model is asked what you're likely to send next, and the empty prompt shows it in place of its placeholder, like Claude Code's prompt suggestions. <kbd>tab</kbd> puts it in the prompt to edit or send. |
 
 ## Install
 
@@ -95,6 +96,7 @@ Pass options with the object form of a `plugins` entry:
 | `spinner` | `true` | Show the `✻ Pondering… (12s · ↓ 1.2k tokens)` line and a tip while a session is busy. With `transcript` off, the line becomes `✻ Worked for 12s · done 4:00 PM` once the turn is done. |
 | `transcript` | `true` | Restyle the session transcript: `❯` prompts, `⏺` replies, and `✻ Worked for 12s · done 4:00 PM` after each reply. |
 | `usage` | `true` | Show `14.9k \| ctx 25% \| 5h: 48% \| 7d: 6%` under the prompt. The 5h and 7d parts need a ChatGPT or Claude subscription login (see below). This replaces OpenCode's built-in footer, so turn that off with `-opencode.prompt.footer` (see Install). If you set this to `false`, leave OpenCode's footer on. |
+| `suggestions` | `false` | After each turn, suggest your next prompt in the empty prompt; <kbd>tab</kbd> accepts it. Each suggestion is one more request on the session's model, with the whole conversation as context, so it costs tokens (or subscription usage) on every turn. Needs `prompt`. |
 | `name` | your OS user | The name in "Welcome back *name*!". |
 | `activateTheme` | `true` | Pick `claude-code` in `cli.json` the first time the plugin installs it, if no theme is chosen there. |
 
@@ -159,6 +161,12 @@ OpenCode styling:
 - The mode line takes over OpenCode's footer status area while the session is
   idle, so anything other plugins put there (such as OpenCode's own `/btw`
   indicator) is hidden until a turn starts.
+- Prompt suggestions come from the session's own model (OpenCode's plugin API
+  can't pick a cheaper one), through the same one-off request OpenCode's `/btw`
+  uses, so they don't appear in the conversation. Only turns that finish while
+  OpenCode is running get one. <kbd>tab</kbd> accepts only into an empty prompt;
+  otherwise it does what it usually does. To use another key, bind
+  `claude.suggestion.accept` in `cli.json`'s `keybinds`.
 - The token count in the spinner line is estimated from the text streamed so
   far, until OpenCode reports the real count at the end of each step.
 - While a session is busy, OpenCode shows its own `esc interrupt` indicator where
@@ -199,6 +207,7 @@ src/clawd.tsx            Clawd
 src/prompt.tsx           prompt restyling, mode line, and the spinner line
 src/transcript.tsx       transcript restyling
 src/usage.tsx            the right of the prompt footer: usage line and keybind hints
+src/suggest.tsx          prompt suggestions: asking the model after each turn
 src/limits.ts            5-hour and 7-day limits for ChatGPT and Claude subscriptions
 src/detach.tsx           rendering our nodes to place inside OpenCode's layout
 src/tree.ts              helpers for finding parts of OpenCode's rendered layout
@@ -209,7 +218,7 @@ scripts/preview.sh       run OpenCode with the plugin, without editing config
 ```
 
 The plugin replaces the `home.footer` slot, replaces `prompt.footer.status`
-(while the session is idle), prepends and appends to `prompt.footer`, and
-prepends to `session.composer.top`. The prompt
+(while the session is idle), prepends and appends to `prompt.footer`, prepends
+to `session.composer.top`, and appends to `app` (for prompt suggestions). The prompt
 itself is still OpenCode's, so input handling, autocomplete, and keybinds are
 OpenCode's.

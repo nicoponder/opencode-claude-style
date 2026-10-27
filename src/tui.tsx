@@ -2,6 +2,7 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { HomeChrome } from "./home"
 import { claimModeLine, PromptChrome, Status } from "./prompt"
+import { SuggestionWatcher } from "./suggest"
 import { installTheme } from "./theme"
 import { UsageFooter } from "./usage"
 
@@ -33,6 +34,13 @@ export type Options = {
    * "-opencode.prompt.footer". Default: true.
    */
   usage?: boolean
+  /**
+   * After each turn, ask the session's model for your likely next prompt, show it
+   * in the empty prompt, and put it in on tab, like Claude Code's prompt
+   * suggestions. Each suggestion is one more request on the session's model, with
+   * the whole conversation as context. Needs `prompt`. Default: false.
+   */
+  suggestions?: boolean
   /** Name for "Welcome back <name>!". Defaults to the OS user. */
   name?: string
   /**
@@ -52,6 +60,7 @@ export function readOptions(raw: unknown): ResolvedOptions {
     spinner: opts.spinner !== false,
     transcript: opts.transcript !== false,
     usage: opts.usage !== false,
+    suggestions: opts.suggestions === true,
     activateTheme: opts.activateTheme !== false,
     name: typeof opts.name === "string" && opts.name.trim() ? opts.name.trim() : undefined,
   }
@@ -82,6 +91,9 @@ export default Plugin.define({
         }),
         claimModeLine(context),
       )
+    }
+    if (options.prompt && options.suggestions) {
+      claims.push(context.ui.slot({ append: "app", render: () => <SuggestionWatcher context={context} /> }))
     }
     if (options.usage) {
       // In place of OpenCode's built-in footer, which cli.json turns off with "-opencode.prompt.footer".

@@ -28,6 +28,7 @@ import {
 } from "./format"
 import { turnMessages } from "./data"
 import { claude, pick, spinnerFrames, spinnerVerbs, tips } from "./palette"
+import { ACCEPT_COMMAND, dismissSuggestion, suggestion } from "./suggest"
 import type { ResolvedOptions } from "./tui"
 import { type Detached, detach } from "./detach"
 import { blankBar, drawn, find, interceptSetter, isTextarea, placeBefore, placeIn, textOf, debug } from "./tree"
@@ -154,6 +155,36 @@ export function PromptChrome(props: { context: Context; options: ResolvedOptions
   let marker: Renderable | undefined
   let hidden: Renderable[] = []
   const patched = new WeakSet<Renderable>()
+  let textarea: Renderable | undefined
+  /** OpenCode's latest placeholder (empty in a session), and the suggested prompt showing in its place. */
+  let theirs: unknown
+  let wrapped = false
+  let shown: string | undefined
+  const suggested = () => (props.options.suggestions ? suggestion(context, props.input.sessionID) : undefined)
+
+  if (props.options.suggestions) {
+    context.keymap.layer(() => ({
+      priority: 10,
+      enabled: () => !!suggested(),
+      commands: [
+        {
+          id: ACCEPT_COMMAND,
+          title: "Accept the suggested prompt",
+          group: "Prompt",
+          bind: "tab",
+          // Only into an empty, focused prompt; otherwise tab does what it usually does.
+          run() {
+            const text = suggested()
+            const input = textarea as { plainText?: string; focused?: boolean; insertText?: (text: string) => void } | undefined
+            if (!text || !input?.insertText || !input.focused || input.plainText) return false
+            input.insertText(text)
+            dismissSuggestion()
+          },
+        },
+      ],
+      bindings: [ACCEPT_COMMAND],
+    }))
+  }
 
   const syncUnsafe = () => {
     if (!row || row.isDestroyed || !row.parent) return
@@ -175,6 +206,9 @@ export function PromptChrome(props: { context: Context; options: ResolvedOptions
       blankBar(parts.bar)
       placeholder(parts.textarea)
     }
+    textarea = parts.textarea
+    // A suggestion came or went: put OpenCode's placeholder through the wrapper again.
+    if (suggested() !== shown && wrapped) (parts.textarea as unknown as { placeholder: unknown }).placeholder = theirs
     // Drop the blank line above the input so the rules hug it, and pull the text
     // in so it sits two columns after the `❯`, as in Claude Code.
     if (parts.input.paddingTop !== 0) parts.input.paddingTop = 0
@@ -203,24 +237,28 @@ export function PromptChrome(props: { context: Context; options: ResolvedOptions
   /**
    * Claude Code's suggestions in place of OpenCode's: `Try "fix lint errors"`.
    * OpenCode rotates its placeholder every so often; each time it does, the next
-   * suggestion here shows instead.
+   * suggestion here shows instead. After a turn, the suggested next prompt (if
+   * suggestions are on) shows instead of either.
    */
   function placeholder(textarea: Renderable) {
-    let seen: unknown
     let turn = -1
-    interceptSetter<unknown>(textarea, "placeholder", (value, set) => {
+    let last: string | undefined
+    const fit = (text: string) => truncateEnd(text, Math.max(1, dims().width - 2 * gutter(dims().width) - 4))
+    wrapped = interceptSetter<unknown>(textarea, "placeholder", (value, set) => {
+      theirs = value
+      const shell = props.input.mode === "shell" || (typeof value === "string" && value.startsWith("Run a command"))
+      shown = shell ? undefined : suggested()
+      if (shown) return set(fit(shown))
       if (typeof value !== "string" || !value) return set(value)
-      if (value !== seen) turn++
-      seen = value
-      const shell = value.startsWith("Run a command")
+      if (value !== last) turn++
+      last = value
       const list = shell ? placeholders.shell : placeholders.normal
       const example = list[turn % list.length]
-      const text = shell ? `Run a command… "${example}"` : `Try "${example}"`
-      set(truncateEnd(text, Math.max(1, dims().width - 2 * gutter(dims().width) - 4)))
+      set(fit(shell ? `Run a command… "${example}"` : `Try "${example}"`))
     })
     // Go through the wrapper once, for the placeholder already showing.
     const input = textarea as unknown as { placeholder: unknown }
-    if (typeof input.placeholder === "string") input.placeholder = input.placeholder
+    input.placeholder = input.placeholder
   }
 
   const sync = () => {

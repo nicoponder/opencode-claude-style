@@ -244,3 +244,13 @@ export function usageLine(input: { tokens: number; percent?: number; cost?: stri
   }
   return join()
 }
+
+/**
+ * A model's suggested next prompt, tidied for the placeholder: its first line,
+ * without wrapping quotes. Nothing if it's empty, NONE, or too long to be a prompt.
+ */
+export function cleanSuggestion(text: string, max = 150) {
+  const line = text.trim().split("\n")[0].trim().replace(/^(["'`“])(.*)(["'`”])$/, "$2").trim()
+  if (!line || /^none\.?$/i.test(line) || line.length > max) return
+  return line
+}

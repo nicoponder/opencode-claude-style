@@ -3,6 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import {
   abbreviateHome,
+  cleanSuggestion,
   describeModel,
   formatClock,
   formatDuration,
@@ -230,5 +231,20 @@ describe("modeLabel", () => {
     expect(modeLabel("Build")).toEqual({ glyph: "⏵⏵", name: "build" })
     expect(modeLabel("Plan")).toEqual({ glyph: "⏸", name: "plan" })
     expect(modeLabel("Docs-Writer")).toEqual({ glyph: "⏵⏵", name: "docs-writer" })
+  })
+})
+
+describe("cleanSuggestion", () => {
+  test("keeps the first line, without wrapping quotes", () => {
+    expect(cleanSuggestion("  run the tests  ")).toBe("run the tests")
+    expect(cleanSuggestion('"commit it"')).toBe("commit it")
+    expect(cleanSuggestion("push it\nand open a PR")).toBe("push it")
+  })
+
+  test("drops empty, NONE, and overlong replies", () => {
+    expect(cleanSuggestion("")).toBeUndefined()
+    expect(cleanSuggestion("NONE")).toBeUndefined()
+    expect(cleanSuggestion("none.")).toBeUndefined()
+    expect(cleanSuggestion("x".repeat(151))).toBeUndefined()
   })
 })
