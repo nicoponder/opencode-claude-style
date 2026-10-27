@@ -3,6 +3,10 @@ import os from "node:os"
 import path from "node:path"
 import {
   abbreviateHome,
+  contextWarning,
+  formatReset,
+  parseAnsi,
+  usageBar,
   claudeSummary,
   cleanSuggestion,
   describeModel,
@@ -266,5 +270,50 @@ describe("claudeSummary", () => {
   test("leaves anything else alone", () => {
     expect(claudeSummary("Running command…", true)).toBeUndefined()
     expect(claudeSummary("Explored: 1 read", false)).toBeUndefined()
+  })
+})
+
+describe("contextWarning", () => {
+  test("warns once the context is 80% full", () => {
+    expect(contextWarning(79)).toBeUndefined()
+    expect(contextWarning(undefined)).toBeUndefined()
+    expect(contextWarning(85)).toBe("15% context left · /compact")
+    expect(contextWarning(104)).toBe("0% context left · /compact")
+  })
+})
+
+describe("usageBar", () => {
+  test("fills a share of the cells, clamped", () => {
+    expect(usageBar(50, 10)).toBe("█████░░░░░")
+    expect(usageBar(0, 4)).toBe("░░░░")
+    expect(usageBar(130, 4)).toBe("████")
+  })
+})
+
+describe("formatReset", () => {
+  const now = new Date(2026, 9, 27, 10, 0).getTime()
+  test("shows the time today, the weekday this week, and the date after", () => {
+    expect(formatReset(new Date(2026, 9, 27, 16, 0).getTime(), now, "en-US")).toBe("4:00 PM")
+    expect(formatReset(new Date(2026, 9, 29, 9, 0).getTime(), now, "en-US")).toBe("Thu 9:00 AM")
+    expect(formatReset(new Date(2026, 10, 10, 9, 0).getTime(), now, "en-US")).toBe("Nov 10")
+  })
+})
+
+describe("parseAnsi", () => {
+  test("splits a line into styled runs", () => {
+    expect(parseAnsi("plain")).toEqual([{ text: "plain" }])
+    expect(parseAnsi("\x1b[1;32mok\x1b[0m done")).toEqual([{ text: "ok", bold: true, fg: "#00CD00" }, { text: " done" }])
+  })
+
+  test("reads 256 and true colors, and resets parts of the style", () => {
+    expect(parseAnsi("\x1b[38;5;196mred\x1b[39m")).toEqual([{ text: "red", fg: "#FF0000" }])
+    expect(parseAnsi("\x1b[48;2;1;2;3m\x1b[2mx\x1b[22my")).toEqual([
+      { text: "x", bg: "#010203", dim: true },
+      { text: "y", bg: "#010203", bold: undefined, dim: undefined },
+    ])
+  })
+
+  test("drops other escape sequences", () => {
+    expect(parseAnsi("\x1b]8;;https://x.dev\x07link\x1b]8;;\x07\x1b[2K!")).toEqual([{ text: "link" }, { text: "!" }])
   })
 })

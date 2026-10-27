@@ -221,8 +221,8 @@ export function contextUsage(messages: ReadonlyArray<UsageMessage>, models: Read
   return { tokens, percent: limit ? Math.round((tokens / limit) * 100) : undefined, providerID }
 }
 
-/** A subscription's rolling usage windows, as percentages used. */
-export type Limits = { fiveHour?: number; sevenDay?: number }
+/** A subscription's rolling usage windows, as percentages used, and when each resets (epoch ms). */
+export type Limits = { fiveHour?: number; sevenDay?: number; fiveHourResets?: number; sevenDayResets?: number }
 
 /**
  * "14.9k | ctx 25% | $0.12 | 5h: 48% | 7d: 6%", leaving out whatever isn't known.
@@ -284,4 +284,100 @@ export function claudeSummary(label: string, active: boolean) {
   const text = items.map(({ n, words }) => `${active ? words.active : words.done} ${n} ${n === 1 ? words.one : words.many}`).join(", ")
   const line = text.charAt(0).toUpperCase() + text.slice(1)
   return active ? line + "…" : line
+}
+
+/** Context use (percent of the window) at which the footer warns, as Claude Code does near auto-compact. */
+export const CONTEXT_WARNING = 80
+
+/** "15% context left · /compact" once the context is CONTEXT_WARNING% full. */
+export function contextWarning(percent: number | undefined) {
+  if (percent === undefined || percent < CONTEXT_WARNING) return
+  return `${Math.max(0, 100 - Math.round(percent))}% context left · /compact`
+}
+
+/** A usage bar, "████░░░░", `width` cells long, for a percentage used. */
+export function usageBar(percent: number, width = 20) {
+  const filled = Math.max(0, Math.min(width, Math.round((percent / 100) * width)))
+  return "█".repeat(filled) + "░".repeat(width - filled)
+}
+
+/** When a limit resets: "4:00 PM" today, "Tue 4:00 PM" this week, "Nov 3" after that. */
+export function formatReset(at: number, now = Date.now(), locale?: string) {
+  const date = new Date(at)
+  const time = date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" })
+  if (date.toDateString() === new Date(now).toDateString()) return time
+  if (at - now < 6 * 86_400_000) return `${date.toLocaleDateString(locale, { weekday: "short" })} ${time}`
+  return date.toLocaleDateString(locale, { month: "short", day: "numeric" })
+}
+
+/** A run of status-line text in one style. Colors are hex; unset means the default. */
+export type AnsiSegment = { text: string; fg?: string; bg?: string; bold?: boolean; dim?: boolean; italic?: boolean; underline?: boolean }
+
+const ansi16 = [
+  "#000000", "#CD0000", "#00CD00", "#CDCD00", "#0000EE", "#CD00CD", "#00CDCD", "#E5E5E5",
+  "#7F7F7F", "#FF0000", "#00FF00", "#FFFF00", "#5C5CFF", "#FF00FF", "#00FFFF", "#FFFFFF",
+]
+
+const hex = (r: number, g: number, b: number) =>
+  "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0").toUpperCase()).join("")
+
+/** One of the 256 xterm colors, as hex. */
+function ansi256(n: number) {
+  if (n < 16) return ansi16[n]
+  if (n >= 232) return hex(8 + (n - 232) * 10, 8 + (n - 232) * 10, 8 + (n - 232) * 10)
+  const level = (v: number) => (v === 0 ? 0 : 55 + v * 40)
+  const i = n - 16
+  return hex(level(Math.floor(i / 36)), level(Math.floor(i / 6) % 6), level(i % 6))
+}
+
+/**
+ * A status-line command's output line as styled segments, from its ANSI SGR
+ * codes (the 16, 256, and true-color forms, bold, dim, italic, underline).
+ * Other escape sequences, such as cursor moves and hyperlinks, are dropped.
+ */
+export function parseAnsi(line: string): AnsiSegment[] {
+  const segments: AnsiSegment[] = []
+  let style: Omit<AnsiSegment, "text"> = {}
+  const clean = line.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+  const pattern = /\x1b\[([0-9;:]*)([A-Za-z])/g
+  let at = 0
+  const push = (text: string) => {
+    const visible = text.replace(/\x1b./g, "")
+    if (visible) segments.push({ text: visible, ...style })
+  }
+  for (const match of clean.matchAll(pattern)) {
+    push(clean.slice(at, match.index))
+    at = match.index + match[0].length
+    if (match[2] !== "m") continue
+    const codes = match[1] === "" ? [0] : match[1].split(/[;:]/).map(Number)
+    for (let i = 0; i < codes.length; i++) {
+      const c = codes[i]
+      if (c === 0) style = {}
+      else if (c === 1) style = { ...style, bold: true }
+      else if (c === 2) style = { ...style, dim: true }
+      else if (c === 3) style = { ...style, italic: true }
+      else if (c === 4) style = { ...style, underline: true }
+      else if (c === 22) style = { ...style, bold: undefined, dim: undefined }
+      else if (c === 23) style = { ...style, italic: undefined }
+      else if (c === 24) style = { ...style, underline: undefined }
+      else if (c >= 30 && c <= 37) style = { ...style, fg: ansi16[c - 30] }
+      else if (c >= 90 && c <= 97) style = { ...style, fg: ansi16[c - 82] }
+      else if (c >= 40 && c <= 47) style = { ...style, bg: ansi16[c - 40] }
+      else if (c >= 100 && c <= 107) style = { ...style, bg: ansi16[c - 92] }
+      else if (c === 39) style = { ...style, fg: undefined }
+      else if (c === 49) style = { ...style, bg: undefined }
+      else if (c === 38 || c === 48) {
+        const key = c === 38 ? "fg" : "bg"
+        if (codes[i + 1] === 5 && codes[i + 2] !== undefined) {
+          style = { ...style, [key]: ansi256(codes[i + 2]) }
+          i += 2
+        } else if (codes[i + 1] === 2 && codes[i + 4] !== undefined) {
+          style = { ...style, [key]: hex(codes[i + 2], codes[i + 3], codes[i + 4]) }
+          i += 4
+        }
+      }
+    }
+  }
+  push(clean.slice(at))
+  return segments
 }

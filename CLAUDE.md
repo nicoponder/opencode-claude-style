@@ -42,6 +42,8 @@ Key techniques that are easy to break if you don't know about them:
 
 **Folding** is OpenCode's own `session.verbosity: "low"`. `transcript.tsx` only rewords its summary line (found by its text, via `claudeSummary` in `format.ts`) and drives ctrl+o by dispatching `session.verbosity.cycle`, reading the current level from that command's title. Don't read `context.keymap.commands()` inside a `keymap.layer` factory: the list includes the layer, and the cycle hangs the TUI before its first frame. Read it in an effect and pass a signal.
 
+**Commands.** Plugin commands are registered with `context.keymap.layer`. A command with `slash` only shows up in slash completion when its layer has `mode: "global"`, as OpenCode's own `/btw` does (see `LimitsCommand` in `src/usage.tsx`).
+
 **Prompt suggestions** (`src/suggest.tsx`, off by default). An `app` slot component asks for a suggestion after each turn through `context.client.session.generate` (the one-off, out-of-transcript request OpenCode's `/btw` uses; it always runs on the session's model). `PromptChrome` shows it through the placeholder wrapper and inserts it on tab with the textarea's `insertText`.
 
 **Subscription limits.** `src/limits.ts` fetches 5h/7d usage from undocumented `chatgpt.com` / `api.anthropic.com` endpoints, only for `openai`/`anthropic` models with an active OAuth login read through OpenCode's credential API. It never refreshes a login itself, and any failure just omits the limits.

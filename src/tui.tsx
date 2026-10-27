@@ -3,10 +3,11 @@ import { Plugin } from "@opencode/plugin/tui"
 import { HomeChrome } from "./home"
 import { startPacing } from "./pacing"
 import { claimModeLine, PromptChrome, Status } from "./prompt"
+import type { StatusLineConfig } from "./statusline"
 import { SuggestionWatcher } from "./suggest"
 import { installTheme } from "./theme"
 import { ExpandKey } from "./transcript"
-import { UsageFooter } from "./usage"
+import { LimitsCommand, UsageFooter } from "./usage"
 
 export type Options = {
   /** Replace the OpenCode logo with Claude Code's welcome banner and Clawd. Default: true. */
@@ -33,9 +34,10 @@ export type Options = {
   transcript?: boolean
   /**
    * Show the session's usage under the prompt as "14.9k | ctx 25% | 5h: 48% |
-   * 7d: 6%". The 5h and 7d parts appear for a ChatGPT Plus/Pro or Claude Pro/Max
-   * login, and are fetched from that provider. This draws the whole right of the
-   * footer, so OpenCode's built-in footer has to be turned off in cli.json with
+   * 7d: 6%", a warning once the context is 80% full, and /limits for the details.
+   * The 5h and 7d parts appear for a ChatGPT Plus/Pro or Claude Pro/Max login,
+   * and are fetched from that provider. This draws the whole right of the footer,
+   * so OpenCode's built-in footer has to be turned off in cli.json with
    * "-opencode.prompt.footer". Default: true.
    */
   usage?: boolean
@@ -46,6 +48,12 @@ export type Options = {
    * the whole conversation as context. Needs `prompt`. Default: false.
    */
   suggestions?: boolean
+  /**
+   * A command whose output shows by the prompt, like Claude Code's status line:
+   * it gets the session's details as JSON on stdin and can print ANSI colors.
+   * A string, or { command, padding } where padding indents it. Default: none.
+   */
+  statusLine?: string | { command: string; padding?: number }
   /** Name for "Welcome back <name>!". Defaults to the OS user. */
   name?: string
   /**
@@ -55,7 +63,15 @@ export type Options = {
   activateTheme?: boolean
 }
 
-export type ResolvedOptions = Required<Omit<Options, "name">> & Pick<Options, "name">
+export type ResolvedOptions = Required<Omit<Options, "name" | "statusLine">> &
+  Pick<Options, "name"> & { statusLine?: StatusLineConfig }
+
+function readStatusLine(value: Options["statusLine"]): StatusLineConfig | undefined {
+  if (typeof value === "string") return value.trim() ? { command: value, padding: 0 } : undefined
+  if (!value || typeof value !== "object" || typeof value.command !== "string" || !value.command.trim()) return
+  const padding = typeof value.padding === "number" && value.padding > 0 ? Math.floor(value.padding) : 0
+  return { command: value.command, padding }
+}
 
 export function readOptions(raw: unknown): ResolvedOptions {
   const opts = (raw && typeof raw === "object" ? raw : {}) as Options
@@ -68,6 +84,7 @@ export function readOptions(raw: unknown): ResolvedOptions {
     suggestions: opts.suggestions === true,
     activateTheme: opts.activateTheme !== false,
     name: typeof opts.name === "string" && opts.name.trim() ? opts.name.trim() : undefined,
+    statusLine: readStatusLine(opts.statusLine),
   }
 }
 
@@ -78,7 +95,7 @@ export default Plugin.define({
     installTheme({ activate: options.activateTheme })
 
     const claims: Array<() => void> = []
-    if (options.banner || options.prompt) {
+    if (options.banner || options.prompt || options.statusLine) {
       // The home screen has no slot for its logo or prompt, so this takes over the
       // footer (which the banner makes redundant) and works from there.
       claims.push(
@@ -105,9 +122,12 @@ export default Plugin.define({
     }
     if (options.usage) {
       // In place of OpenCode's built-in footer, which cli.json turns off with "-opencode.prompt.footer".
-      claims.push(context.ui.slot({ append: "prompt.footer", render: (input) => <UsageFooter context={context} input={input} /> }))
+      claims.push(
+        context.ui.slot({ append: "prompt.footer", render: (input) => <UsageFooter context={context} input={input} /> }),
+        context.ui.slot({ append: "app", render: () => <LimitsCommand context={context} /> }),
+      )
     }
-    if (options.spinner || options.transcript) {
+    if (options.spinner || options.transcript || options.statusLine) {
       claims.push(
         context.ui.slot({
           prepend: "session.composer.top",

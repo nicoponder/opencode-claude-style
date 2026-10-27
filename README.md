@@ -25,8 +25,9 @@ work exactly as before. None of Claude Code's features are copied.
 | **Clawd** | Drawn from the same quadrant-block characters Claude Code uses (`▐▛███▜▌` / `▝▜█████▛▘` / `▘▘ ▝▝`), with black eyes. |
 | **Prompt** | Sits at the bottom of the home screen, as it does in a session, and spans the full terminal width between two horizontal rules, like Claude Code's input. It starts with Claude Code's `❯` (`!` in shell mode) instead of OpenCode's colored bar, has no filled background, and uses Claude Code's placeholder suggestions (`Try "fix lint errors"`, `Try "how does <filepath> work?"`, …). OpenCode's agent and model row is removed from inside the prompt. |
 | **Mode line** | The bottom line, under the prompt, in place of OpenCode's directory: `⏵⏵ build mode on (shift+tab to cycle)` or `⏸ plan mode on (shift+tab to cycle)`, like Claude Code's. Build is lavender and plan is teal, as in Claude Code, unless you've given the agent a `color`; other agents get `⏵⏵` in their OpenCode color. Shell mode shows `! shell mode on`, and the key shown is whatever `agent.cycle` is bound to. The model isn't shown, as in Claude Code. |
-| **Spinner line** | While a session is working, shows `✻ Pondering… (12s · ↓ 1.2k tokens · thinking)` above the prompt, timed from your message, with `⎿  Tip: …` underneath. The glyph cycles through `· ✢ ✳ ✶ ✻ ✽`, the verb is picked at random from a whimsical list, and a highlight sweeps across it. `thinking` shows while the model is reasoning. The tips are OpenCode's own. OpenCode's own progress indicator is still there. |
-| **Usage line** | Left of `ctrl+p commands` under the prompt, OpenCode's `15.9K (8%)` becomes `14.9k \| ctx 25% \| 5h: 48% \| 7d: 6%`: the session's tokens, how full the context is, and, when you're signed in with a ChatGPT Plus/Pro or Claude Pro/Max subscription, how much of its 5-hour and 7-day limits you've used. In a narrow terminal it drops the token count, then the cost, the context, and the 7-day limit to fit. |
+| **Spinner line** | While a session is working, shows `✻ Pondering… (12s · ↓ 1.2k tokens · thinking · esc to interrupt)` above the prompt, timed from your message, with `⎿  Tip: …` underneath. The glyph cycles through `· ✢ ✳ ✶ ✻ ✽`, the verb is picked at random from a whimsical list, and a highlight sweeps across it. `thinking` shows while the model is reasoning. The tips are OpenCode's own. OpenCode's own progress indicator is still there. |
+| **Usage line** | Left of `ctrl+p commands` under the prompt, OpenCode's `15.9K (8%)` becomes `14.9k \| ctx 25% \| 5h: 48% \| 7d: 6%`: the session's tokens, how full the context is, and, when you're signed in with a ChatGPT Plus/Pro or Claude Pro/Max subscription, how much of its 5-hour and 7-day limits you've used. In a narrow terminal it drops the token count, then the cost, the context, and the 7-day limit to fit. Once the context is 80% full, `15% context left · /compact` shows beside it, in the warning color. `/limits` opens the details: the session's tokens and cost, and bars for the 5-hour and 7-day limits with when each resets. |
+| **Status line** | Off unless you set the `statusLine` option. Like Claude Code's: a command of yours gets the session's details as JSON on stdin, and its output (ANSI colors and all) shows by the prompt. See [Status line](#status-line). |
 | **Transcript** | Your earlier prompts show as `❯ text` on a gray band instead of in a box with a colored bar, and replies start with `⏺`. While a reply streams only its finished lines show, so prose arrives a paragraph at a time instead of word by word, as in Claude Code. Runs of tool calls and thinking fold into one line in Claude Code's words: `+ Ran 4 shell commands, read 1 file`, or `Running 1 shell command…` while the run is going (click it to open the run). <kbd>ctrl+o</kbd> expands every run, with thinking shown, and collapses them again. OpenCode's `Build · model · 12s` line after each reply becomes `✻ Worked for 12s · done 4:00 PM` (the verb varies, as in Claude Code), or `⎿  Interrupted · What should OpenCode do instead?`. |
 | **Prompt suggestions** | Off unless you turn on the `suggestions` option. After each turn, the session's model is asked what you're likely to send next, and the empty prompt shows it in place of its placeholder, like Claude Code's prompt suggestions. <kbd>tab</kbd> puts it in the prompt to edit or send. |
 
@@ -95,8 +96,9 @@ Pass options with the object form of a `plugins` entry:
 | `prompt` | `true` | Full-width prompt between rules, Claude Code-style placeholders, the prompt at the bottom of the home screen, and the mode line. |
 | `spinner` | `true` | Show the `✻ Pondering… (12s · ↓ 1.2k tokens)` line and a tip while a session is busy. With `transcript` off, the line becomes `✻ Worked for 12s · done 4:00 PM` once the turn is done. |
 | `transcript` | `true` | Restyle and pace the session transcript: `❯` prompts, `⏺` replies shown a finished line at a time, folded tool calls in Claude Code's words with <kbd>ctrl+o</kbd> to expand, and `✻ Worked for 12s · done 4:00 PM` after each reply. |
-| `usage` | `true` | Show `14.9k \| ctx 25% \| 5h: 48% \| 7d: 6%` under the prompt. The 5h and 7d parts need a ChatGPT or Claude subscription login (see below). This replaces OpenCode's built-in footer, so turn that off with `-opencode.prompt.footer` (see Install). If you set this to `false`, leave OpenCode's footer on. |
+| `usage` | `true` | Show `14.9k \| ctx 25% \| 5h: 48% \| 7d: 6%` under the prompt, a warning once the context is 80% full, and the `/limits` command. The 5h and 7d parts need a ChatGPT or Claude subscription login (see below). This replaces OpenCode's built-in footer, so turn that off with `-opencode.prompt.footer` (see Install). If you set this to `false`, leave OpenCode's footer on. |
 | `suggestions` | `false` | After each turn, suggest your next prompt in the empty prompt; <kbd>tab</kbd> accepts it. Each suggestion is one more request on the session's model, with the whole conversation as context, so it costs tokens (or subscription usage) on every turn. Needs `prompt`. |
+| `statusLine` | none | A command whose output shows by the prompt, like Claude Code's status line: a string, or `{ "command": "…", "padding": 2 }` to indent it. See [Status line](#status-line). |
 | `name` | your OS user | The name in "Welcome back *name*!". |
 | `activateTheme` | `true` | Pick `claude-code` in `cli.json` the first time the plugin installs it, if no theme is chosen there. |
 
@@ -113,6 +115,38 @@ The plugin never refreshes a login itself: if it has expired, the limits are
 left out until OpenCode refreshes it. Any other provider, or a failed request,
 just leaves them out. These endpoints aren't documented, so a provider could
 change them without notice.
+
+## Status line
+
+Set `statusLine` to a shell command, as with Claude Code's `statusLine` setting:
+
+```jsonc
+{ "package": "/absolute/path/to/opencode-claude", "options": { "statusLine": "~/.config/opencode/statusline.sh" } }
+```
+
+The command runs in the session's directory with this JSON on stdin (the field
+names follow Claude Code's where there's an equivalent):
+
+```jsonc
+{
+  "session_id": "ses_…",            // null on the home screen
+  "session_name": "Fix the login bug",
+  "cwd": "/path/to/project",
+  "workspace": { "current_dir": "/path/to/project" },
+  "version": "2.2.0",               // OpenCode's
+  "model": { "id": "anthropic/claude-sonnet-5", "display_name": "Claude Sonnet 5", "variant": null },
+  "cost": { "total_cost_usd": 0.12 },
+  "context": { "tokens": 14900, "used_percentage": 8 },
+  "busy": false
+}
+```
+
+Each line it prints shows (up to five), with its ANSI colors, bold, dim, italic,
+and underline. Text without a color is drawn muted. It runs again when the
+session changes (at most every 300ms), and every 10 seconds besides, and is
+stopped after 5 seconds. On the home screen it shows under the prompt, as in
+Claude Code. In a session it shows just above the prompt, since OpenCode has no
+place for plugins under the prompt there.
 
 ## Color mapping
 
@@ -185,6 +219,13 @@ OpenCode styling:
   OpenCode is running get one. <kbd>tab</kbd> accepts only into an empty prompt;
   otherwise it does what it usually does. To use another key, bind
   `claude.suggestion.accept` in `cli.json`'s `keybinds`.
+- `/limits` is Claude Code's `/usage` under another name: OpenCode's own
+  `/usage` shows your OpenCode workspace's limits, so it keeps that name. The
+  5-hour and 7-day reset times come from the same undocumented provider
+  endpoints as the limits.
+- The context warning appears at 80% full. OpenCode doesn't say when it will
+  compact a session, so the warning says how much is left rather than how long
+  until auto-compact, as Claude Code's does.
 - The token count in the spinner line is estimated from the text streamed so
   far, until OpenCode reports the real count at the end of each step.
 - While a session is busy, OpenCode shows its own `esc interrupt` indicator where
@@ -225,7 +266,8 @@ src/clawd.tsx            Clawd
 src/prompt.tsx           prompt restyling, mode line, and the spinner line
 src/transcript.tsx       transcript restyling, folded-run wording, and the ctrl+o key
 src/pacing.tsx           holding a streaming reply back to its finished lines
-src/usage.tsx            the right of the prompt footer: usage line and keybind hints
+src/usage.tsx            the right of the prompt footer (usage line, context warning, keybind hints) and /limits
+src/statusline.tsx       the custom status line
 src/suggest.tsx          prompt suggestions: asking the model after each turn
 src/limits.ts            5-hour and 7-day limits for ChatGPT and Claude subscriptions
 src/detach.tsx           rendering our nodes to place inside OpenCode's layout
@@ -238,7 +280,7 @@ scripts/preview.sh       run OpenCode with the plugin, without editing config
 
 The plugin replaces the `home.footer` slot, replaces `prompt.footer.status`
 (while the session is idle), prepends and appends to `prompt.footer`, prepends
-to `session.composer.top`, and appends to `app` (for the ctrl+o key and prompt
-suggestions). The prompt
+to `session.composer.top`, and appends to `app` (for the ctrl+o key, `/limits`,
+and prompt suggestions). The prompt
 itself is still OpenCode's, so input handling, autocomplete, and keybinds are
 OpenCode's.

@@ -32,6 +32,7 @@ import { ACCEPT_COMMAND, dismissSuggestion, suggestion } from "./suggest"
 import type { ResolvedOptions } from "./tui"
 import { type Detached, detach } from "./detach"
 import { blankBar, drawn, find, interceptSetter, isTextarea, placeBefore, placeIn, textOf, debug } from "./tree"
+import { StatusLine } from "./statusline"
 import { useTranscript } from "./transcript"
 
 type Context = Plugin.Context
@@ -330,7 +331,8 @@ function ModeLine(props: { context: Context; agent?: Agent; shell: boolean }) {
 /**
  * The lines above the prompt: Claude Code's spinner while the session is busy.
  * Once the turn has finished, "✻ Worked for 12s · done 4:00 PM", unless the
- * transcript already shows that after the reply.
+ * transcript already shows that after the reply. Then the status line, if one is
+ * set (OpenCode has no slot under the prompt in a session).
  */
 export function Status(props: { context: Context; options: ResolvedOptions; sessionID: string }) {
   const context = props.context
@@ -362,6 +364,11 @@ export function Status(props: { context: Context; options: ResolvedOptions; sess
           </Match>
         </Switch>
       </Show>
+      <Show when={props.options.statusLine}>
+        {(config: () => NonNullable<ResolvedOptions["statusLine"]>) => (
+          <StatusLine context={context} config={config()} sessionID={props.sessionID} />
+        )}
+      </Show>
     </box>
   )
 }
@@ -382,6 +389,8 @@ function Spinner(props: { context: Context; sessionID: string }) {
 
   const progress = createMemo(() => turnProgress(turnMessages(props.context, props.sessionID)))
   const glyph = () => spinnerFrames[tick() % spinnerFrames.length]
+  // OpenCode spells the key "escape"; Claude Code (and OpenCode's own hint) say "esc".
+  const interrupt = () => props.context.keymap.shortcuts("session.interrupt")[0]?.replace(/\bescape\b/, "esc")
   const details = () => {
     tick()
     const p = progress()
@@ -389,6 +398,7 @@ function Spinner(props: { context: Context; sessionID: string }) {
       formatDuration(Date.now() - (p?.start ?? mounted)),
       p?.tokens ? `↓ ${formatTokens(p.tokens)}` : undefined,
       p?.thinking ? "thinking" : undefined,
+      interrupt() ? `${interrupt()} to interrupt` : undefined,
     ]
       .filter(Boolean)
       .join(" · ")

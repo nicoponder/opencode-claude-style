@@ -4,6 +4,7 @@ import type { Renderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { getOwner, onCleanup, onMount } from "solid-js"
 import { gutter } from "./prompt"
+import { StatusLine } from "./statusline"
 import { type Detached, detach } from "./detach"
 import { drawn, find, isTextarea, placeIn, debug } from "./tree"
 import type { ResolvedOptions } from "./tui"
@@ -89,7 +90,12 @@ export function HomeChrome(props: { context: Plugin.Context; options: ResolvedOp
     })
   })
 
-  return <box ref={(r: Renderable) => (self = r)} height={0} />
+  // The status line, if one is set, sits here under the prompt, as in Claude Code.
+  return (
+    <box ref={(r: Renderable) => (self = r)} flexShrink={0} paddingLeft={gutter(dims().width)}>
+      {props.options.statusLine ? <StatusLine context={props.context} config={props.options.statusLine} /> : null}
+    </box>
+  )
 }
 
 /**

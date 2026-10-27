@@ -100,6 +100,21 @@ describe("parseChatGPTUsage", () => {
     expect(parseChatGPTUsage({ rate_limit: { primary_window: { used_percent: 5, limit_window_seconds: 60 } } })).toEqual({})
     expect(parseChatGPTUsage(null)).toEqual({})
   })
+
+  test("reads when each window resets", () => {
+    const body = {
+      rate_limit: {
+        primary_window: { used_percent: 48, limit_window_seconds: 18_000, reset_at: 1_800_000_000 },
+        secondary_window: { used_percent: 6, limit_window_seconds: 604_800, reset_after_seconds: 60 },
+      },
+    }
+    expect(parseChatGPTUsage(body, 1_000)).toEqual({
+      fiveHour: 48,
+      sevenDay: 6,
+      fiveHourResets: 1_800_000_000_000,
+      sevenDayResets: 61_000,
+    })
+  })
 })
 
 describe("parseClaudeUsage", () => {
@@ -110,5 +125,10 @@ describe("parseClaudeUsage", () => {
     })
     expect(parseClaudeUsage({ five_hour: null, seven_day: { utilization: 6 } })).toEqual({ sevenDay: 6 })
     expect(parseClaudeUsage({})).toEqual({})
+  })
+
+  test("reads when each window resets", () => {
+    const body = { five_hour: { utilization: 48, resets_at: "2026-10-27T15:00:00Z" }, seven_day: { utilization: 6 } }
+    expect(parseClaudeUsage(body)).toEqual({ fiveHour: 48, sevenDay: 6, fiveHourResets: Date.parse("2026-10-27T15:00:00Z") })
   })
 })

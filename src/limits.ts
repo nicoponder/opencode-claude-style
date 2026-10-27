@@ -39,29 +39,46 @@ const sources: Record<string, Source> = {
   },
 }
 
-type Window = { used_percent?: unknown; limit_window_seconds?: unknown }
+type Window = { used_percent?: unknown; limit_window_seconds?: unknown; reset_at?: unknown; reset_after_seconds?: unknown }
+
+/** A reset time as epoch ms, from epoch seconds or an ISO date. */
+function resetTime(value: unknown) {
+  if (typeof value === "number" && value > 0) return value < 1e12 ? value * 1000 : value
+  if (typeof value === "string") {
+    const at = Date.parse(value)
+    if (!Number.isNaN(at)) return at
+  }
+}
 
 /** ChatGPT reports a primary and secondary window; tell them apart by length. */
-export function parseChatGPTUsage(body: unknown): Limits {
+export function parseChatGPTUsage(body: unknown, now = Date.now()): Limits {
   const limit = (body as { rate_limit?: { primary_window?: Window; secondary_window?: Window } } | null)?.rate_limit
   const limits: Limits = {}
   for (const window of [limit?.primary_window, limit?.secondary_window]) {
     const used = window?.used_percent
     const seconds = window?.limit_window_seconds
     if (typeof used !== "number" || typeof seconds !== "number") continue
-    if (seconds === 5 * 3600) limits.fiveHour = used
-    else if (seconds === 7 * 86400) limits.sevenDay = used
+    const after = window?.reset_after_seconds
+    const resets = resetTime(window?.reset_at) ?? (typeof after === "number" ? now + after * 1000 : undefined)
+    if (seconds === 5 * 3600) Object.assign(limits, { fiveHour: used }, resets && { fiveHourResets: resets })
+    else if (seconds === 7 * 86400) Object.assign(limits, { sevenDay: used }, resets && { sevenDayResets: resets })
   }
   return limits
 }
 
+type ClaudeWindow = { utilization?: unknown; resets_at?: unknown }
+
 export function parseClaudeUsage(body: unknown): Limits {
-  const usage = body as { five_hour?: { utilization?: unknown }; seven_day?: { utilization?: unknown } } | null
+  const usage = body as { five_hour?: ClaudeWindow; seven_day?: ClaudeWindow } | null
   const five = usage?.five_hour?.utilization
   const seven = usage?.seven_day?.utilization
+  const fiveResets = resetTime(usage?.five_hour?.resets_at)
+  const sevenResets = resetTime(usage?.seven_day?.resets_at)
   return {
     ...(typeof five === "number" && { fiveHour: five }),
     ...(typeof seven === "number" && { sevenDay: seven }),
+    ...(fiveResets && { fiveHourResets: fiveResets }),
+    ...(sevenResets && { sevenDayResets: sevenResets }),
   }
 }
 
