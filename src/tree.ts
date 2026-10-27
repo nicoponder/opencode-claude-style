@@ -113,6 +113,42 @@ export function interceptSetter<T>(node: object, key: string, write: (value: T, 
   return true
 }
 
+/**
+ * Route every assignment to `key` on every instance sharing `sample`'s class
+ * through `write`, which gets the instance, the value, and the original setter to
+ * pass it on with (or not). Reads still go to the original getter. Returns how to
+ * set a value past the wrapper and how to undo it, or undefined if there's no setter.
+ */
+export function interceptPrototypeSetter<T>(
+  sample: object,
+  key: string,
+  write: (node: Renderable, value: T, set: (value: T) => void) => void,
+) {
+  let proto = Object.getPrototypeOf(sample)
+  let descriptor: PropertyDescriptor | undefined
+  while (proto && !(descriptor = Object.getOwnPropertyDescriptor(proto, key))?.set) proto = Object.getPrototypeOf(proto)
+  const original = descriptor
+  if (!proto || !original?.set) return
+  const owner = proto as object
+  const set = (node: Renderable, value: T) => original.set!.call(node, value)
+  Object.defineProperty(owner, key, {
+    configurable: true,
+    enumerable: original.enumerable,
+    get(this: Renderable) {
+      return original.get?.call(this)
+    },
+    set(this: Renderable, value: T) {
+      write(this, value, (next) => set(this, next))
+    },
+  })
+  return { set, restore: () => Object.defineProperty(owner, key, original) }
+}
+
+/** Whether `node` is one of OpenTUI's markdown renderables. */
+export function isMarkdown(node: Renderable) {
+  return "content" in node && "streaming" in node && "conceal" in node
+}
+
 const beforeRender = new Set<() => void>()
 let unpatch: (() => void) | undefined
 

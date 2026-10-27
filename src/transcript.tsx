@@ -1,12 +1,100 @@
 /** @jsxImportSource @opentui/solid */
 import type { Plugin } from "@opencode/plugin/tui"
 import type { RGBA, Renderable } from "@opentui/core"
-import { getOwner, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createSignal, getOwner, onCleanup, onMount, Show } from "solid-js"
 import { type Detached, detach } from "./detach"
-import { formatClock, formatDuration, turnOf, turnVerb, type TurnMessage } from "./format"
-import { blankBar, debug, drawn, find, idOf, onBeforeRender, placeIn, textOf } from "./tree"
+import { claudeSummary, formatClock, formatDuration, turnOf, turnVerb, type TurnMessage } from "./format"
+import { adoptMarkdown, heldBack } from "./pacing"
+import { verbositySet } from "./theme"
+import { blankBar, debug, drawn, find, idOf, isMarkdown, onBeforeRender, placeBefore, placeIn, textOf } from "./tree"
 
 type Context = Plugin.Context
+
+export const EXPAND_COMMAND = "claude.transcript.expand"
+const THINKING_COMMAND = "session.toggle.thinking"
+const VERBOSITY_COMMAND = "session.verbosity.cycle"
+
+/** OpenCode's transcript verbosity ("low", "medium", "high"), from its cycle command's title. */
+function verbosity(context: Context) {
+  const title = context.keymap.commands().find((command) => command.id === VERBOSITY_COMMAND)?.title
+  return /^Verbosity: (\w+)/i.exec(title ?? "")?.[1]?.toLowerCase()
+}
+
+/** Whether OpenCode is hiding thinking: its toggle offers to expand it. */
+function thinkingHidden(context: Context) {
+  return context.keymap.commands().find((command) => command.id === THINKING_COMMAND)?.title === "Expand thinking"
+}
+
+/**
+ * Cycle OpenCode's verbosity until it's `target`. OpenCode saves the setting
+ * before the command's title changes, so wait for each step to land.
+ */
+async function setVerbosity(context: Context, target: string) {
+  for (let step = 0; step < 3; step++) {
+    const now = verbosity(context)
+    if (!now || now === target) return
+    context.keymap.dispatch(VERBOSITY_COMMAND)
+    for (let wait = 0; wait < 20 && verbosity(context) === now; wait++) await new Promise((r) => setTimeout(r, 50))
+  }
+}
+
+/**
+ * Claude Code's folding, from OpenCode's own: at its "low" verbosity OpenCode
+ * folds each run of tool calls and thinking into one line, which the transcript
+ * words the way Claude Code does. The first time a session opens with no
+ * verbosity set in cli.json, this sets it to low.
+ *
+ * ctrl+o switches to "high" and back, like Claude Code's ctrl+o, in sessions
+ * (OpenCode's own ctrl+o, its recent-sessions menu, still works on the home
+ * screen). Expanding also turns on OpenCode's thinking display if it was hidden,
+ * and collapsing puts it back. Rebind it in cli.json's keybinds under
+ * "claude.transcript.expand".
+ */
+export function ExpandKey(props: { context: Context }) {
+  const context = props.context
+  let restoreThinking = false
+  let defaulted = false
+  const toggleThinking = () => context.keymap.dispatch(THINKING_COMMAND)
+  // Read outside the layer: the command list it comes from includes the layer.
+  const [level, setLevel] = createSignal<string | undefined>()
+  createEffect(() => setLevel(verbosity(context)))
+  createEffect(() => {
+    if (defaulted || context.ui.router.current().type !== "session" || !level()) return
+    defaulted = true
+    if (!verbositySet()) void setVerbosity(context, "low")
+  })
+  context.keymap.layer(() => ({
+    priority: 10,
+    enabled: () => context.ui.router.current().type === "session",
+    commands: [
+      {
+        id: EXPAND_COMMAND,
+        title: level() === "high" ? "Collapse tool calls and thinking" : "Expand tool calls and thinking",
+        group: "Session",
+        bind: "ctrl+o",
+        palette: true,
+        run() {
+          const expand = verbosity(context) !== "high"
+          void setVerbosity(context, expand ? "high" : "low")
+          if (expand && thinkingHidden(context)) {
+            restoreThinking = true
+            toggleThinking()
+          } else if (!expand && restoreThinking) {
+            restoreThinking = false
+            if (!thinkingHidden(context)) toggleThinking()
+          }
+        },
+      },
+    ],
+    bindings: [EXPAND_COMMAND],
+  }))
+  // Don't leave OpenCode's thinking expanded because of us.
+  onCleanup(() => {
+    if (restoreThinking && !thinkingHidden(context)) toggleThinking()
+    restoreThinking = false
+  })
+  return null
+}
 
 /** The parts of an OpenCode session message the transcript reads. */
 type Message = TurnMessage & { agent?: string }
@@ -25,11 +113,12 @@ function titlecase(text: string) {
  * Restyle OpenCode's session transcript like Claude Code's:
  *
  * - User messages lose their colored bar and padding and get a `❯`.
- * - Replies get a `⏺` bullet.
+ * - Replies get a `⏺` bullet. A reply that hasn't finished a line yet stays
+ *   hidden (see pacing.tsx).
+ * - OpenCode's folded runs of tool calls ("+ 4 commands, 1 thought") are worded
+ *   as Claude Code words them: "+ Ran 4 shell commands".
  * - OpenCode's "Build · model · 12s" line after each reply becomes
  *   "✻ Worked for 12s · done 4:00 PM", or "⎿ Interrupted".
- *
- * Tool calls and thinking stay as OpenCode draws them.
  *
  * OpenCode gives plugins no hook into the transcript, so this reads what it drew
  * and adjusts it just before each frame is drawn. Anything it doesn't recognize
@@ -126,6 +215,8 @@ export function useTranscript(context: Context, sessionID: () => string, anchor:
     const latestUser = messages.findLast((m) => m.type === "user")
     const footers = new Map<string, Renderable[]>()
     let user: Message | undefined
+    let folds = 0
+    adoptMarkdown(scroll)
 
     for (const node of scroll.getChildren()) {
       const row = settle(node, classify(node, byID, agents))
@@ -135,7 +226,15 @@ export function useTranscript(context: Context, sessionID: () => string, anchor:
         restyleUser(node)
       } else if (row.type === "footer") {
         if (user) footers.set(user.id, [...(footers.get(user.id) ?? []), node])
+      } else if (row.type === "other") {
+        reword(node, `${user?.id ?? "start"}:${folds++}`, next)
       } else if (row.type === "text") {
+        const markdown = find(node, isMarkdown)
+        // Nothing finished yet: show nothing, not an empty bullet.
+        if (markdown && heldBack(markdown)) {
+          hide(node, next)
+          continue
+        }
         const body = kids(node)[0]
         if (body) {
           placeIn(
@@ -219,6 +318,30 @@ export function useTranscript(context: Context, sessionID: () => string, anchor:
       decorations.clear()
     })
   })
+
+  /**
+   * Word OpenCode's summary of a folded run as Claude Code does. The summary is
+   * found by what it says, hidden, and ours put beside it in the same row, so
+   * clicking it still opens the run. Its icon (+ or −) shows once the run is
+   * done; while it's going OpenCode shows a spinner instead.
+   */
+  function reword(node: Renderable, key: string, next: Set<Renderable>) {
+    const label = find(node, (n) => !ours.has(n) && claudeSummary(textOf(n) ?? "", false) !== undefined)
+    const parent = label?.parent
+    if (!label || !parent) return
+    const siblings = kids(parent)
+    const icon = textOf(siblings[siblings.indexOf(label) - 1])?.trim()
+    const text = claudeSummary(textOf(label)!, icon !== "+" && icon !== "−")!
+    hide(label, next)
+    placeBefore(
+      decoration(`fold:${key}`, { text, fg: (label as { fg?: RGBA }).fg }, (data) => (
+        <text flexGrow={1} wrapMode="none" fg={data().fg} selectable={false}>
+          {data().text}
+        </text>
+      )),
+      label,
+    )
+  }
 
   /**
    * Claude Code shows your earlier prompts as `❯ text` on a gray band. OpenCode

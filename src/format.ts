@@ -254,3 +254,34 @@ export function cleanSuggestion(text: string, max = 150) {
   if (!line || /^none\.?$/i.test(line) || line.length > max) return
   return line
 }
+
+/** The kinds OpenCode counts in a folded run of tool calls: "4 commands, 1 thought". */
+const summaryKinds = "command|edit|thought|read|tool|instruction"
+const nativeSummary = new RegExp(`^\\d+ (?:${summaryKinds})s?(?:, \\d+ (?:${summaryKinds})s?)*$`)
+
+const summaryWords: Record<string, { done: string; active: string; one: string; many: string }> = {
+  command: { done: "ran", active: "running", one: "shell command", many: "shell commands" },
+  read: { done: "read", active: "reading", one: "file", many: "files" },
+  edit: { done: "edited", active: "editing", one: "file", many: "files" },
+  tool: { done: "used", active: "using", one: "tool", many: "tools" },
+  instruction: { done: "loaded", active: "loading", one: "instruction file", many: "instruction files" },
+}
+
+/**
+ * OpenCode's summary of a folded run ("4 commands, 1 read, 1 thought"), worded as
+ * Claude Code words it: "Ran 4 shell commands, read 1 file", or "Running 4 shell
+ * commands, reading 1 file…" while the run is going. Thinking isn't counted, as
+ * Claude Code doesn't show it. Undefined for anything that isn't such a summary.
+ */
+export function claudeSummary(label: string, active: boolean) {
+  if (!nativeSummary.test(label)) return
+  const items = label.split(", ").flatMap((item) => {
+    const [count, word] = item.split(" ")
+    const kind = word.replace(/s$/, "")
+    return kind === "thought" ? [] : [{ n: Number(count), words: summaryWords[kind] }]
+  })
+  if (!items.length) return active ? "Thinking…" : "Thought"
+  const text = items.map(({ n, words }) => `${active ? words.active : words.done} ${n} ${n === 1 ? words.one : words.many}`).join(", ")
+  const line = text.charAt(0).toUpperCase() + text.slice(1)
+  return active ? line + "…" : line
+}

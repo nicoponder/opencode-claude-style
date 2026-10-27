@@ -1,9 +1,11 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode/plugin/tui"
 import { HomeChrome } from "./home"
+import { startPacing } from "./pacing"
 import { claimModeLine, PromptChrome, Status } from "./prompt"
 import { SuggestionWatcher } from "./suggest"
 import { installTheme } from "./theme"
+import { ExpandKey } from "./transcript"
 import { UsageFooter } from "./usage"
 
 export type Options = {
@@ -21,9 +23,12 @@ export type Options = {
    */
   spinner?: boolean
   /**
-   * Restyle the session transcript like Claude Code's: `❯` before your messages,
-   * `⏺` before replies, and "✻ Worked for 12s · done 4:00 PM" in place of
-   * OpenCode's agent and model line. Default: true.
+   * Restyle the session transcript like Claude Code's, and pace it the same way:
+   * `❯` before your messages, `⏺` before replies, replies shown a finished line at
+   * a time, runs of tool calls folded into one line in Claude Code's words (from
+   * OpenCode's low verbosity, which ctrl+o switches to high and back), and
+   * "✻ Worked for 12s · done 4:00 PM" in place of OpenCode's agent and model
+   * line. Default: true.
    */
   transcript?: boolean
   /**
@@ -91,6 +96,9 @@ export default Plugin.define({
         }),
         claimModeLine(context),
       )
+    }
+    if (options.transcript) {
+      claims.push(startPacing(context), context.ui.slot({ append: "app", render: () => <ExpandKey context={context} /> }))
     }
     if (options.prompt && options.suggestions) {
       claims.push(context.ui.slot({ append: "app", render: () => <SuggestionWatcher context={context} /> }))

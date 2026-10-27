@@ -32,12 +32,15 @@ OpenCode's own usage text, subagent/shell counts, and `ctrl+p commands` hints co
 Key techniques that are easy to break if you don't know about them:
 - `onBeforeRender` (`src/tree.ts`) monkey-patches the root's `render` so restyling runs synchronously right before each frame. Renderer frame callbacks are async and would let OpenCode's updates flash for a frame.
 - `interceptSetter` wraps a node's property setter. The prompt uses it to swap OpenCode's rotating placeholder for Claude Code's.
+- `interceptPrototypeSetter` wraps a setter for every instance of a class. `src/pacing.tsx` uses it on the markdown component's `content`, taking the prototype from one of OpenCode's markdown nodes (the plugin's OpenTUI copy may not be OpenCode's), and holds back only text matching the reply streaming in the open session (from `context.data`). That keeps pacing independent of the transcript's row structure.
 - `blankBar` pins `customBorderChars` on a box, because OpenCode re-applies its colored left bar on re-render and turning the border off doesn't stick.
 - `src/detach.tsx` renders our own Solid nodes outside the normal tree so they can be inserted anywhere in OpenCode's. It **must stay a `.tsx` file**: OpenCode maps `solid-js` to its own copy only for JSX modules, and nodes created with another copy can't find the renderer. The same applies to any module that creates Solid nodes.
 
 **Theme.** `themes/claude-code.json` is an OpenCode theme document. OpenCode 2 plugins can't register themes, so `src/theme.ts` copies it into `~/.config/opencode/themes/` on load (leaving a user-edited copy alone, replacing the old 1.x-format copy) and, the first time only, selects it in `cli.json` unless a theme is already chosen. `test/theme.test.ts` validates it with OpenCode's own `parseThemeDocument`/`resolveThemeDocument`.
 
 **Pure logic vs. UI.** `src/format.ts` holds the pure, tested helpers (model labels, durations, turn timing, tool-call summaries and shell-command classification). `src/palette.ts` holds Claude Code colors that have no theme token, spinner glyphs, verbs, and tips. `src/data.ts` adapts session messages into the shape these helpers read. Put new testable logic in `format.ts` rather than the components.
+
+**Folding** is OpenCode's own `session.verbosity: "low"`. `transcript.tsx` only rewords its summary line (found by its text, via `claudeSummary` in `format.ts`) and drives ctrl+o by dispatching `session.verbosity.cycle`, reading the current level from that command's title. Don't read `context.keymap.commands()` inside a `keymap.layer` factory: the list includes the layer, and the cycle hangs the TUI before its first frame. Read it in an effect and pass a signal.
 
 **Prompt suggestions** (`src/suggest.tsx`, off by default). An `app` slot component asks for a suggestion after each turn through `context.client.session.generate` (the one-off, out-of-transcript request OpenCode's `/btw` uses; it always runs on the session's model). `PromptChrome` shows it through the placeholder wrapper and inserts it on tab with the textarea's `insertText`.
 

@@ -73,6 +73,15 @@ export function activate(dir = configDir()) {
   return true
 }
 
+/** Whether cli.json or OPENCODE_CLI_CONFIG_CONTENT sets the transcript's verbosity. */
+export function verbositySet(dir = configDir()) {
+  const pick = (config: unknown) => (config as { session?: { verbosity?: unknown } } | undefined)?.session?.verbosity
+  const inline = process.env.OPENCODE_CLI_CONFIG_CONTENT
+  if (inline && pick(readInline(inline)) != null) return true
+  const file = path.join(dir, "cli.json")
+  return pick(existsSync(file) ? readJson(file) : undefined) != null
+}
+
 function readInline(text: string) {
   try {
     return JSON.parse(text) as unknown

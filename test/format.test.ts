@@ -3,6 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import {
   abbreviateHome,
+  claudeSummary,
   cleanSuggestion,
   describeModel,
   formatClock,
@@ -246,5 +247,24 @@ describe("cleanSuggestion", () => {
     expect(cleanSuggestion("NONE")).toBeUndefined()
     expect(cleanSuggestion("none.")).toBeUndefined()
     expect(cleanSuggestion("x".repeat(151))).toBeUndefined()
+  })
+})
+
+describe("claudeSummary", () => {
+  test("words OpenCode's summary like Claude Code, without thinking", () => {
+    expect(claudeSummary("4 commands, 1 thought", false)).toBe("Ran 4 shell commands")
+    expect(claudeSummary("2 reads, 1 command", false)).toBe("Read 2 files, ran 1 shell command")
+    expect(claudeSummary("1 edit, 3 tools, 2 instructions", false)).toBe("Edited 1 file, used 3 tools, loaded 2 instruction files")
+    expect(claudeSummary("2 thoughts", false)).toBe("Thought")
+  })
+
+  test("is in the present tense while the run is going", () => {
+    expect(claudeSummary("1 read, 1 command", true)).toBe("Reading 1 file, running 1 shell command…")
+    expect(claudeSummary("1 thought", true)).toBe("Thinking…")
+  })
+
+  test("leaves anything else alone", () => {
+    expect(claudeSummary("Running command…", true)).toBeUndefined()
+    expect(claudeSummary("Explored: 1 read", false)).toBeUndefined()
   })
 })
