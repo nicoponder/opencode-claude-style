@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A cosmetic OpenCode **2.x** TUI plugin plus theme (`opencode-claude-style`) that makes OpenCode look like Claude Code. It changes appearance only; OpenCode's input handling, keybinds, agents, and tools stay OpenCode's. Pinned against OpenCode 2.0.20 (`@opencode/*` devDependencies). The last OpenCode 1.x–compatible commit is `9253328`.
+A cosmetic OpenCode **2.x** TUI plugin plus theme (`opencode-claude-style`) that makes OpenCode look like Claude Code. It changes appearance only; OpenCode's input handling, keybinds, agents, and tools stay OpenCode's. Pinned against OpenCode 2.2.0 and OpenTUI 0.7 (`@opencode/*` and `@opentui/*` devDependencies); OpenTUI changes are the usual cause of breakage. The last OpenCode 1.x–compatible commit is `9253328`.
 
 ## Commands
 
@@ -23,13 +23,15 @@ The TUI owns the terminal, so `console` output is invisible while running. Set `
 
 ## Architecture
 
-**Entry and slots.** `src/tui.tsx` reads options (`Options` type; mirrored in the README's Options table) and claims the only slots OpenCode 2 offers: replaces `home.footer` (`HomeChrome`), prepends to `prompt.footer` (`PromptChrome`) and `session.composer.top` (`Status`), and appends to `app` (`ExpandKey`, the ctrl+o command). Each feature flag gates which slots are claimed.
+**Entry and slots.** `src/tui.tsx` reads options (`Options` type; mirrored in the README's Options table) and claims slots: replaces `home.footer` (`HomeChrome`), replaces `prompt.footer.status` with the mode line (`claimModeLine`, which releases the claim while the current session is busy so OpenCode's progress and interrupt hint show), prepends to `prompt.footer` (`PromptChrome`, which only anchors the prompt restyle) and `session.composer.top` (`Status`), and appends to `prompt.footer` (`UsageFooter` in `src/usage.tsx`). Each feature flag gates which slots are claimed. The slot paths are in `SlotMap` in `@opencode/plugin/dist/tui/context.d.ts`. Prefer a slot over tree surgery whenever one fits.
+
+OpenCode's own usage text, subagent/shell counts, and `ctrl+p commands` hints come from a built-in plugin, `opencode.prompt.footer`, not from the slot. `UsageFooter` reimplements that whole right side, so the built-in has to be disabled with a `"-opencode.prompt.footer"` entry in `cli.json`'s `plugins` (`scripts/preview.sh` adds it). A `-<id>` plugins entry disables any built-in by ID.
 
 **Everything else is done by reaching into OpenCode's rendered tree.** The logo, the prompt's internals, the home layout, and the transcript have no plugin API, so components mounted in those slots walk up to the renderer root and find nodes by ID, shape, or text (`src/tree.ts`: `find`, `drawn`, `textOf`, `isTextarea`, …). The firm rule: **a miss must leave OpenCode's version alone** — never throw or break if the layout differs, just skip the restyle.
 
 Key techniques that are easy to break if you don't know about them:
 - `onBeforeRender` (`src/tree.ts`) monkey-patches the root's `render` so restyling runs synchronously right before each frame. Renderer frame callbacks are async and would let OpenCode's updates flash for a frame.
-- `interceptSetter` wraps a node's property setter. The transcript uses it on the markdown's text setter to hold streamed replies back to their last finished line, since OpenCode sets the text on every token.
+- `interceptSetter` wraps a node's property setter. The prompt uses it to swap OpenCode's rotating placeholder for Claude Code's.
 - `blankBar` pins `customBorderChars` on a box, because OpenCode re-applies its colored left bar on re-render and turning the border off doesn't stick.
 - `src/detach.tsx` renders our own Solid nodes outside the normal tree so they can be inserted anywhere in OpenCode's. It **must stay a `.tsx` file**: OpenCode maps `solid-js` to its own copy only for JSX modules, and nodes created with another copy can't find the renderer. The same applies to any module that creates Solid nodes.
 

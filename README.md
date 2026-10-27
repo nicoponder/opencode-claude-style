@@ -27,11 +27,11 @@ work exactly as before. None of Claude Code's features are copied.
 | **Mode line** | The bottom line, under the prompt, in place of OpenCode's directory: `⏵⏵ build mode on (shift+tab to cycle)` or `⏸ plan mode on (shift+tab to cycle)`, like Claude Code's. Build is lavender and plan is teal, as in Claude Code, unless you've given the agent a `color`; other agents get `⏵⏵` in their OpenCode color. Shell mode shows `! shell mode on`, and the key shown is whatever `agent.cycle` is bound to. The model isn't shown, as in Claude Code. |
 | **Spinner line** | While a session is working, shows `✻ Pondering… (12s · ↓ 1.2k tokens · thinking)` above the prompt, timed from your message, with `⎿  Tip: …` underneath. The glyph cycles through `· ✢ ✳ ✶ ✻ ✽`, the verb is picked at random from a whimsical list, and a highlight sweeps across it. `thinking` shows while the model is reasoning. The tips are OpenCode's own. OpenCode's own progress indicator is still there. |
 | **Usage line** | Left of `ctrl+p commands` under the prompt, OpenCode's `15.9K (8%)` becomes `14.9k \| ctx 25% \| 5h: 48% \| 7d: 6%`: the session's tokens, how full the context is, and, when you're signed in with a ChatGPT Plus/Pro or Claude Pro/Max subscription, how much of its 5-hour and 7-day limits you've used. In a narrow terminal it drops the token count, then the cost, the context, and the 7-day limit to fit. |
-| **Transcript** | Your earlier prompts show as `❯ text` on a gray band instead of in a box with a colored bar. Replies start with `⏺`, and while one streams only its finished lines show, so prose arrives a paragraph at a time instead of word by word, as in Claude Code. Runs of reads, searches, shell commands, and web fetches fold into one line. While the run is going, a dim `⏺` blinks beside `Listing 1 directory, running 2 shell commands…` (or the running command's description, if the model gave one), with `⎿  $ npm test` underneath. The line stays put between calls instead of flickering, and each command stays up for at least 0.7s so you can read it. Once the reply moves on, it becomes a dim `Listed 1 directory, ran 2 shell commands`. Shell commands that only list, read, or search (`ls`, `cat`, `grep`, …) count as such, as Claude Code counts them. Thinking is hidden, and the spinner line says when the model is thinking. <kbd>ctrl+o</kbd> expands everything to OpenCode's full view, with thinking shown, and collapses it again. OpenCode's `Build · model · 12s` line after each reply becomes `✻ Worked for 12s · done 4:00 PM` (the verb varies, as in Claude Code), or `⎿  Interrupted · What should OpenCode do instead?`. |
+| **Transcript** | Your earlier prompts show as `❯ text` on a gray band instead of in a box with a colored bar, and replies start with `⏺`. OpenCode's `Build · model · 12s` line after each reply becomes `✻ Worked for 12s · done 4:00 PM` (the verb varies, as in Claude Code), or `⎿  Interrupted · What should OpenCode do instead?`. Tool calls and thinking stay as OpenCode draws them. |
 
 ## Install
 
-Requires OpenCode **2.0** or later; tested with 2.0.20. (OpenCode 1.x plugins
+Requires OpenCode **2.2** or later; tested with 2.2.0. (OpenCode 1.x plugins
 don't run in 2.0; use the last 1.x-compatible commit, `9253328`, for OpenCode
 1.18.) OpenCode loads CLI plugins with its own Bun runtime, so there's no build
 step.
@@ -52,12 +52,14 @@ files aren't touched, but the plugin does copy `claude-code.json` into
 
 Clone this repo somewhere, then add the folder to the `plugins` list in
 **`~/.config/opencode/cli.json`**. It's a CLI-only plugin, so it doesn't go in
-`opencode.json`:
+`opencode.json`. Also add `-opencode.prompt.footer`, which turns off OpenCode's
+built-in prompt footer: the plugin draws its own in its place (the usage line and
+the keybind hints). Without it, you'll see both.
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/v2/cli.json",
-  "plugins": ["/absolute/path/to/opencode-claude"]
+  "plugins": ["/absolute/path/to/opencode-claude", "-opencode.prompt.footer"]
 }
 ```
 
@@ -91,8 +93,8 @@ Pass options with the object form of a `plugins` entry:
 | `banner` | `true` | Replace the OpenCode logo with the welcome banner and Clawd, and remove OpenCode's home footer (MCP status and version; the banner shows the version). |
 | `prompt` | `true` | Full-width prompt between rules, Claude Code-style placeholders, the prompt at the bottom of the home screen, and the mode line. |
 | `spinner` | `true` | Show the `✻ Pondering… (12s · ↓ 1.2k tokens)` line and a tip while a session is busy. With `transcript` off, the line becomes `✻ Worked for 12s · done 4:00 PM` once the turn is done. |
-| `transcript` | `true` | Restyle and pace the session transcript: `❯` prompts, `⏺` replies shown a finished line at a time, folded tool calls with <kbd>ctrl+o</kbd> to expand, thinking hidden until <kbd>ctrl+o</kbd>, and `✻ Worked for 12s · done 4:00 PM` after each reply. |
-| `usage` | `true` | Show `14.9k \| ctx 25% \| 5h: 48% \| 7d: 6%` under the prompt. The 5h and 7d parts need a ChatGPT or Claude subscription login (see below). |
+| `transcript` | `true` | Restyle the session transcript: `❯` prompts, `⏺` replies, and `✻ Worked for 12s · done 4:00 PM` after each reply. |
+| `usage` | `true` | Show `14.9k \| ctx 25% \| 5h: 48% \| 7d: 6%` under the prompt. The 5h and 7d parts need a ChatGPT or Claude subscription login (see below). This replaces OpenCode's built-in footer, so turn that off with `-opencode.prompt.footer` (see Install). If you set this to `false`, leave OpenCode's footer on. |
 | `name` | your OS user | The name in "Welcome back *name*!". |
 | `activateTheme` | `true` | Pick `claude-code` in `cli.json` the first time the plugin installs it, if no theme is chosen there. |
 
@@ -138,40 +140,32 @@ colors OpenCode gives agents by their position.
 These parts of OpenCode's UI aren't exposed to plugins, so they keep their
 OpenCode styling:
 
-- OpenCode 2 gives plugins slots only for the home footer, the prompt footer, the
-  area above the session prompt, the sidebar, and the app root. Everything else
-  the plugin changes (the logo, the prompt's inside, the home screen's layout, and
-  the transcript) is found in the rendered layout: the logo's box (hidden, with the
-  banner put in its place), the prompt's agent and model row (hidden, and read to
-  get the current agent), its colored bar (blanked, with `❯` drawn over it), the
-  home screen's spacers (rearranged so the prompt sits at the bottom), and the
-  transcript's rows (recognized by their IDs and by what OpenCode draws in them).
-  If a future OpenCode version changes that layout, those parts stay as OpenCode
-  draws them and the mode line stays empty, rather than anything breaking. Hiding
-  the agent row also hides the model variant (reasoning effort) and the `auto`
-  permissions tag.
+- OpenCode 2 gives plugins slots only for the home footer, the prompt footer and
+  its status area, the area above the session prompt, the sidebar, and the app
+  root. The mode line, the usage line, the spinner line, and the removed home
+  footer use those. Everything else the plugin changes (the logo, the prompt's
+  inside, the home screen's layout, and the transcript) is found in the rendered
+  layout: the logo's box (hidden, with the banner put in its place), the prompt's
+  agent and model row (hidden, and read to get the current agent), its colored
+  bar (blanked, with `❯` drawn over it), the home screen's spacers (rearranged so
+  the prompt sits at the bottom), and the transcript's rows
+  (recognized by their IDs and by what OpenCode draws in them). If a future
+  OpenCode version changes that layout, those parts stay as OpenCode draws them
+  and the mode line stays empty, rather than anything breaking. Hiding the agent
+  row also hides the model variant (reasoning effort) and the `auto` permissions
+  tag.
 - The transcript is restyled just before each frame is drawn, by hooking into
-  OpenCode's renderer. Reply text is held back by wrapping the markdown's text
-  setter, since OpenCode sets it on every token.
-- Only reads, searches, shell commands, web fetches, web searches, and skills
-  fold into summary lines. Edits, writes, subagents, todos, questions, other
-  tools, and failed or denied calls keep OpenCode's style, as do all tool calls
-  once expanded with <kbd>ctrl+o</kbd>. There are no `⏺ Bash(…)` / `⎿` result
-  lines. OpenCode groups web searches with searches, so they count as searches.
-- <kbd>ctrl+o</kbd> is OpenCode's shortcut for its recent sessions menu. In a
-  session the plugin takes it over (the menu is still on <kbd>ctrl+o</kbd> on the
-  home screen, and in the command palette). To use another key, bind
-  `claude.transcript.expand` in `cli.json`'s `keybinds`.
-- <kbd>ctrl+o</kbd> switches OpenCode's thinking display on while expanded, and
-  back off when collapsed or when OpenCode exits. OpenCode saves that setting to
-  `cli.json`, so it's written each time.
-- Expanding with <kbd>ctrl+o</kbd> shows OpenCode's own view, where reads and
-  searches stay grouped under `→ Explored: …` (click one to open it).
+  OpenCode's renderer.
+- The mode line takes over OpenCode's footer status area while the session is
+  idle, so anything other plugins put there (such as OpenCode's own `/btw`
+  indicator) is hidden until a turn starts.
 - The token count in the spinner line is estimated from the text streamed so
   far, until OpenCode reports the real count at the end of each step.
 - While a session is busy, OpenCode shows its own `esc interrupt` indicator where
   the mode line is, so the mode line comes back when the turn finishes.
-- OpenCode's `shift+tab agents` and `ctrl+p commands` hints stay at the right of the mode line.
+- The `shift+tab agents` and `ctrl+p commands` hints stay at the right of the
+  mode line, as in OpenCode. With OpenCode's built-in footer turned off, the
+  plugin draws them, along with OpenCode's count of running subagents and shells.
 - The home prompt ignores OpenCode's 75-column cap so it can span the terminal.
 - The rules are drawn only while the theme leaves the prompt unfilled (as
   `claude-code` does). Under a theme with a filled prompt, the fill already shows
@@ -203,18 +197,19 @@ src/home.tsx             home screen: banner in place of the logo, prompt at the
 src/welcome.tsx          welcome banner and compact header
 src/clawd.tsx            Clawd
 src/prompt.tsx           prompt restyling, mode line, and the spinner line
-src/transcript.tsx       transcript restyling and the ctrl+o key
-src/usage.tsx            the usage line under the prompt
+src/transcript.tsx       transcript restyling
+src/usage.tsx            the right of the prompt footer: usage line and keybind hints
 src/limits.ts            5-hour and 7-day limits for ChatGPT and Claude subscriptions
 src/detach.tsx           rendering our nodes to place inside OpenCode's layout
 src/tree.ts              helpers for finding parts of OpenCode's rendered layout
 src/data.ts              session messages in the shape the helpers read
 src/palette.ts           Claude Code colors with no theme token, spinner glyphs, verbs, and tips
-src/format.ts            pure helpers (model label, durations, turn timing, tool summaries)
+src/format.ts            pure helpers (model label, durations, turn timing, usage line)
 scripts/preview.sh       run OpenCode with the plugin, without editing config
 ```
 
-The plugin replaces the `home.footer` slot, prepends to `prompt.footer` and
-`session.composer.top`, and appends to `app` (for the ctrl+o key). The prompt
+The plugin replaces the `home.footer` slot, replaces `prompt.footer.status`
+(while the session is idle), prepends and appends to `prompt.footer`, and
+prepends to `session.composer.top`. The prompt
 itself is still OpenCode's, so input handling, autocomplete, and keybinds are
 OpenCode's.

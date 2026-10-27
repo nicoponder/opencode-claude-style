@@ -47,7 +47,7 @@ export function HomeChrome(props: { context: Plugin.Context; options: ResolvedOp
     if (props.options.prompt) {
       // OpenCode caps the home prompt at 75 columns; Claude Code's spans the terminal.
       // (opentui ignores null here, so "100%" is how to lift it.)
-      if (prompt.getLayoutNode().getMaxWidth().unit !== 0) prompt.maxWidth = "100%"
+      if (prompt.getMaxWidth().unit !== 0) prompt.maxWidth = "100%"
       if (!restore) restore = anchorToBottom(prompt)
     }
 
@@ -103,10 +103,10 @@ function anchorToBottom(prompt: Renderable) {
   if (!parent) return
   const siblings = drawn(parent)
   const after = siblings.slice(siblings.indexOf(prompt) + 1)
-  const spacer = after.find((s) => s.getLayoutNode().getFlexGrow() > 0)
+  const spacer = after.find((s) => s.getFlexGrow() > 0)
   if (!spacer) return
   for (const s of after.slice(0, after.indexOf(spacer))) if (s.visible) parent.insertBefore(s, prompt)
-  const grow = spacer.getLayoutNode().getFlexGrow()
+  const grow = spacer.getFlexGrow()
   spacer.flexGrow = 0
   return () => {
     if (!spacer.isDestroyed) spacer.flexGrow = grow

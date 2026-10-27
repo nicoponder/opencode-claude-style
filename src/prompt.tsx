@@ -3,7 +3,19 @@ import type { Plugin } from "@opencode/plugin/tui"
 import type { SlotMap } from "@opencode/plugin/tui/context"
 import type { RGBA, Renderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createMemo, createSignal, For, getOwner, Match, onCleanup, onMount, Show, Switch } from "solid-js"
+import {
+  createEffect,
+  createMemo,
+  createRoot,
+  createSignal,
+  For,
+  getOwner,
+  Match,
+  onCleanup,
+  onMount,
+  Show,
+  Switch,
+} from "solid-js"
 import {
   formatClock,
   formatDuration,
@@ -18,9 +30,8 @@ import { turnMessages } from "./data"
 import { claude, pick, spinnerFrames, spinnerVerbs, tips } from "./palette"
 import type { ResolvedOptions } from "./tui"
 import { type Detached, detach } from "./detach"
-import { blankBar, drawn, find, idOf, interceptSetter, isTextarea, placeBefore, placeIn, textOf, debug } from "./tree"
+import { blankBar, drawn, find, interceptSetter, isTextarea, placeBefore, placeIn, textOf, debug } from "./tree"
 import { useTranscript } from "./transcript"
-import { useUsageLine } from "./usage"
 
 type Context = Plugin.Context
 type FooterInput = SlotMap["prompt.footer"]
@@ -72,22 +83,51 @@ function sameAgent(a: Agent | undefined, b: Agent | undefined) {
   return a.name === b.name && a.color.equals(b.color)
 }
 
+/** The current agent, read from the prompt by PromptChrome, for the mode line. */
+const [agent, setAgent] = createSignal<Agent | undefined>(undefined, { equals: sameAgent })
+
 /**
- * Everything under and around OpenCode's prompt, from one component OpenCode
- * mounts at the start of the prompt's footer row (on the home screen and in
- * sessions alike):
+ * Claude Code's mode line, "⏵⏵ build mode on (shift+tab to cycle)", in place of
+ * OpenCode's directory under the prompt. While the current session is busy the
+ * claim is released, so OpenCode's own progress and interrupt hint show there.
+ * Returns a function that releases it for good.
+ */
+export function claimModeLine(context: Context) {
+  return createRoot((dispose) => {
+    const busy = createMemo(() => {
+      const route = context.ui.router.current()
+      return route.type === "session" && context.data.session.status(route.sessionID) === "running"
+    })
+    createEffect(() => {
+      if (busy()) return
+      onCleanup(
+        context.ui.slot({
+          replace: "prompt.footer.status",
+          render: (input) => (
+            <box flexDirection="row" flexGrow={1} flexShrink={1} minWidth={0} marginLeft={2}>
+              <ModeLine context={context} agent={agent()} shell={input.mode === "shell"} />
+            </box>
+          ),
+        }),
+      )
+    })
+    return dispose
+  })
+}
+
+/**
+ * Everything around OpenCode's prompt, from one component OpenCode mounts at the
+ * start of the prompt's footer row (on the home screen and in sessions alike):
  *
- * - Claude Code's mode line, "⏵⏵ build mode on (shift+tab to cycle)", in the
- *   agent's color, where OpenCode shows the directory.
  * - The prompt restyled like Claude Code's input: two full-width rules around it,
  *   `❯` in place of the colored bar, no agent and model row (the agent moves to
  *   the mode line; the model isn't shown, as in Claude Code), and Claude Code's
  *   placeholder suggestions.
- * - The usage line, "14.9k | ctx 25% | 5h: 48% | 7d: 6%", in place of OpenCode's.
  *
  * Plugins can't configure the inside of the prompt, so its parts are found in the
  * rendered tree. If OpenCode's layout changes so they can't be found, the prompt
- * is left as OpenCode draws it and the mode line stays empty.
+ * is left as OpenCode draws it and the mode line stays empty. The mode line
+ * itself is in a slot of its own (see claimModeLine).
  */
 export function PromptChrome(props: { context: Context; options: ResolvedOptions; input: FooterInput }) {
   const context = props.context
@@ -96,12 +136,6 @@ export function PromptChrome(props: { context: Context; options: ResolvedOptions
   const owner = getOwner()
   const ours = new WeakSet<Renderable>()
   let row: Renderable | undefined
-  const [agent, setAgent] = createSignal<Agent | undefined>(undefined, { equals: sameAgent })
-  const busy = () => !!props.input.sessionID && context.data.session.status(props.input.sessionID) === "running"
-  const restyle = props.options.prompt
-  const showMode = () => restyle && !busy()
-
-  if (props.options.usage) useUsageLine(context, () => props.input.sessionID, () => row?.parent ?? undefined, ours)
 
   const ruled = () => theme().decrease(theme().background.raised.base).a === 0
   const edge = () => -gutter(dims().width)
@@ -124,10 +158,6 @@ export function PromptChrome(props: { context: Context; options: ResolvedOptions
   const syncUnsafe = () => {
     if (!row || row.isDestroyed || !row.parent) return
     const footer = row.parent
-    // OpenCode's directory label, which the mode line takes the place of.
-    const location = find(footer, (node) => idOf(node) === "prompt.footer.location")
-    if (location) location.visible = !showMode()
-    if (!restyle) return
     const parts = promptParts(footer, ours)
     if (!parts) return
     const label = parts.meta && find(parts.meta, (node) => textOf(node) !== undefined && textOf(node) !== "")
@@ -212,13 +242,9 @@ export function PromptChrome(props: { context: Context; options: ResolvedOptions
     })
   })
 
-  return (
-    <box ref={(r: Renderable) => (row = r)} flexDirection="row" flexShrink={0} marginLeft={showMode() ? 2 : 0}>
-      <Show when={showMode()}>
-        <ModeLine context={context} agent={agent()} shell={props.input.mode === "shell"} />
-      </Show>
-    </box>
-  )
+  // Draws nothing; it's here to find the prompt from. Absolute, so the footer row
+  // doesn't put a gap after it.
+  return <box ref={(r: Renderable) => (row = r)} position="absolute" width={0} height={0} />
 }
 
 /**

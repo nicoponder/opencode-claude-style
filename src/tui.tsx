@@ -1,9 +1,9 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode/plugin/tui"
 import { HomeChrome } from "./home"
-import { PromptChrome, Status } from "./prompt"
+import { claimModeLine, PromptChrome, Status } from "./prompt"
 import { installTheme } from "./theme"
-import { ExpandKey } from "./transcript"
+import { UsageFooter } from "./usage"
 
 export type Options = {
   /** Replace the OpenCode logo with Claude Code's welcome banner and Clawd. Default: true. */
@@ -20,17 +20,17 @@ export type Options = {
    */
   spinner?: boolean
   /**
-   * Restyle the session transcript like Claude Code's, and pace it the same way:
-   * `❯` before your messages, `⏺` before replies, replies shown a finished line at
-   * a time, runs of reads, searches, and shell commands folded into one line
-   * (ctrl+o expands them), thinking hidden until ctrl+o, and "✻ Worked for 12s ·
-   * done 4:00 PM" in place of OpenCode's agent and model line. Default: true.
+   * Restyle the session transcript like Claude Code's: `❯` before your messages,
+   * `⏺` before replies, and "✻ Worked for 12s · done 4:00 PM" in place of
+   * OpenCode's agent and model line. Default: true.
    */
   transcript?: boolean
   /**
    * Show the session's usage under the prompt as "14.9k | ctx 25% | 5h: 48% |
    * 7d: 6%". The 5h and 7d parts appear for a ChatGPT Plus/Pro or Claude Pro/Max
-   * login, and are fetched from that provider. Default: true.
+   * login, and are fetched from that provider. This draws the whole right of the
+   * footer, so OpenCode's built-in footer has to be turned off in cli.json with
+   * "-opencode.prompt.footer". Default: true.
    */
   usage?: boolean
   /** Name for "Welcome back <name>!". Defaults to the OS user. */
@@ -74,13 +74,18 @@ export default Plugin.define({
         }),
       )
     }
-    if (options.prompt || options.usage) {
+    if (options.prompt) {
       claims.push(
         context.ui.slot({
           prepend: "prompt.footer",
           render: (input) => <PromptChrome context={context} options={options} input={input} />,
         }),
+        claimModeLine(context),
       )
+    }
+    if (options.usage) {
+      // In place of OpenCode's built-in footer, which cli.json turns off with "-opencode.prompt.footer".
+      claims.push(context.ui.slot({ append: "prompt.footer", render: (input) => <UsageFooter context={context} input={input} /> }))
     }
     if (options.spinner || options.transcript) {
       claims.push(
@@ -89,9 +94,6 @@ export default Plugin.define({
           render: (input) => <Status context={context} options={options} sessionID={input.sessionID} />,
         }),
       )
-    }
-    if (options.transcript) {
-      claims.push(context.ui.slot({ append: "app", render: () => <ExpandKey context={context} /> }))
     }
     return () => {
       for (const release of claims) release()

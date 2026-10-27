@@ -98,5 +98,4 @@ export const tips = [
   "Add .md files to .opencode/agents/ for specialized AI personas",
   "Use /timeline to jump to specific messages",
   "Use /review to review uncommitted changes, branches, or PRs",
-  "Press ctrl+o to expand tool calls and thinking",
 ]

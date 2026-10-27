@@ -10,9 +10,6 @@ import {
   lastTurn,
   modeLabel,
   relativeTime,
-  summarizeTools,
-  commandHint,
-  commandKind,
   turnVerb,
   truncateEnd,
   truncateStart,
@@ -218,41 +215,6 @@ describe("formatClock", () => {
   test("prints hours and minutes", () => {
     const at = new Date(2026, 0, 1, 16, 0).getTime()
     expect(formatClock(at, "en-US")).toBe("4:00 PM")
-  })
-})
-
-describe("summarizeTools", () => {
-  test("counts each kind in the order it first appears", () => {
-    expect(summarizeTools(["read", "bash", "read"], false)).toBe("Read 2 files, ran 1 shell command")
-    expect(summarizeTools(["list", "bash"], false)).toBe("Listed 1 directory, ran 1 shell command")
-    expect(summarizeTools(["search", "search", "fetch"], false)).toBe("Searched for 2 patterns, fetched 1 URL")
-  })
-
-  test("puts the whole run in the present tense while it's going", () => {
-    expect(summarizeTools(["read", "bash"], true)).toBe("Reading 1 file, running 1 shell command…")
-  })
-})
-
-describe("commandKind", () => {
-  test("counts looking-only commands as listing, reading, or searching", () => {
-    expect(commandKind("ls -la")).toBe("list")
-    expect(commandKind("tree src && echo ---")).toBe("list")
-    expect(commandKind("cat package.json | jq .name")).toBe("read")
-    expect(commandKind("grep -rn GUTTER src | head")).toBe("search")
-  })
-
-  test("anything else is a shell command", () => {
-    expect(commandKind("npm test")).toBe("bash")
-    expect(commandKind("ls && rm -rf build")).toBe("bash")
-    expect(commandKind("echo hi")).toBe("bash")
-  })
-})
-
-describe("commandHint", () => {
-  test("collapses whitespace and caps the length", () => {
-    expect(commandHint("  git   status  ")).toBe("$ git status")
-    expect(commandHint("a\n\n  b")).toBe("$ a\nb")
-    expect(commandHint("x".repeat(20), 10)).toBe("$ xxxxxxx…")
   })
 })
 
