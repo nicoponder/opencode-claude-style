@@ -149,41 +149,25 @@ export function isMarkdown(node: Renderable) {
   return "content" in node && "streaming" in node && "conceal" in node
 }
 
-const beforeRender = new Set<() => void>()
-let unpatch: (() => void) | undefined
-
 /**
- * Run `fn` synchronously just before each frame is laid out and drawn. The
+ * Run `fn` synchronously just before each frame is laid out and drawn, as the
+ * lifecycle pass of `host`, a node of ours (it holds one such hook). OpenTUI runs
+ * every node's pass at the start of each frame, ahead of native layout. The
  * renderer's frame callbacks are awaited, which lets OpenCode's own updates slip
  * in after them and show for a frame; this runs with nothing in between.
  * Returns a function that stops it.
  */
-export function onBeforeRender(root: Renderable, fn: () => void) {
-  beforeRender.add(fn)
-  if (!unpatch) {
-    const target = root as unknown as { render: (...args: unknown[]) => unknown }
-    const original = target.render
-    const patched = function (this: unknown, ...args: unknown[]) {
-      for (const run of beforeRender) {
-        try {
-          run()
-        } catch (error) {
-          console.error("opencode-claude-style: restyle failed", error)
-        }
-      }
-      return original.apply(this, args)
-    }
-    target.render = patched
-    unpatch = () => {
-      if (target.render === patched) target.render = original
+export function onBeforeRender(host: Renderable, fn: () => void) {
+  const run = () => {
+    try {
+      fn()
+    } catch (error) {
+      debug("restyle failed", error)
     }
   }
+  host.onLifecyclePass = run
   return () => {
-    beforeRender.delete(fn)
-    if (beforeRender.size === 0) {
-      unpatch?.()
-      unpatch = undefined
-    }
+    if (!host.isDestroyed && host.onLifecyclePass === run) host.onLifecyclePass = null
   }
 }
 

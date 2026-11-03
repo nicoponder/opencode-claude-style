@@ -308,10 +308,11 @@ export function useTranscript(context: Context, sessionID: () => string, anchor:
   onMount(() => {
     // Restyle just before every frame is drawn, so new rows never show unstyled,
     // even for a frame. The timer catches rows that settle while nothing redraws.
-    const stop = onBeforeRender(context.renderer.root, safeSync)
+    const host = anchor()
+    const stop = host && onBeforeRender(host, safeSync)
     const timer = setInterval(safeSync, 100)
     onCleanup(() => {
-      stop()
+      stop?.()
       clearInterval(timer)
       for (const node of hidden) if (!node.isDestroyed) node.visible = true
       for (const d of decorations.values()) d.dispose()
