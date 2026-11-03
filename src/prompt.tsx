@@ -161,6 +161,12 @@ export function PromptChrome(props: { context: Context; options: ResolvedOptions
   let theirs: unknown
   let wrapped = false
   let shown: string | undefined
+  /** The prompt's outer box, which has to stay on screen. */
+  let prompt: Renderable | undefined
+  /** OpenCode's row limit for the input, and ours under it while the prompt would run off the screen. */
+  let theirMax: number | undefined
+  let cap: number | undefined
+  let screen: number | undefined
   const suggested = () => (props.options.suggestions ? suggestion(context, props.input.sessionID) : undefined)
 
   if (props.options.suggestions) {
@@ -206,8 +212,10 @@ export function PromptChrome(props: { context: Context; options: ResolvedOptions
       patched.add(parts.bar)
       blankBar(parts.bar)
       placeholder(parts.textarea)
+      limitHeight(parts.textarea)
     }
     textarea = parts.textarea
+    prompt = parts.anchor
     // A suggestion came or went: put OpenCode's placeholder through the wrapper again.
     if (suggested() !== shown && wrapped) (parts.textarea as unknown as { placeholder: unknown }).placeholder = theirs
     // Drop the blank line above the input so the rules hug it, and pull the text
@@ -233,6 +241,54 @@ export function PromptChrome(props: { context: Context; options: ResolvedOptions
     placeBefore(top, parts.bar)
     placeBefore(bottom, footer)
     placeIn(marker, parts.anchor)
+  }
+
+  /**
+   * OpenCode lets the input grow to at least six rows whatever the terminal's
+   * height. On a short home screen nothing above the prompt can give way, so the
+   * prompt runs off the bottom: the text you type lands below the screen while the
+   * cursor sticks to the last row. Route OpenCode's limit through `cap` instead.
+   */
+  function limitHeight(textarea: Renderable) {
+    const current = textarea.getMaxHeight()
+    // Unit 1 is a number of rows; anything else (a percentage, say) is left alone.
+    theirMax = current.unit === 1 ? current.value : undefined
+    interceptSetter<unknown>(textarea, "maxHeight", (value, set) => {
+      theirMax = typeof value === "number" ? value : undefined
+      set(theirMax !== undefined && cap !== undefined ? Math.min(theirMax, cap) : value)
+    })
+  }
+
+  /**
+   * After each frame, lower the cap by however far that frame's prompt ran past
+   * the bottom of the screen, and draw again, so the input scrolls within the rows
+   * it has. Layout is native and can't be run ahead, so an overflow shows for one
+   * frame. The cap is lifted once the prompt is empty or the terminal is resized.
+   */
+  const fitUnsafe = () => {
+    if (!textarea || textarea.isDestroyed || !prompt || prompt.isDestroyed || theirMax === undefined) return
+    const height = context.renderer.root.height
+    if (height !== screen) {
+      screen = height
+      cap = undefined
+    } else {
+      const overflow = prompt.y + prompt.height - height
+      if (overflow > 0) cap = Math.max(1, textarea.height - overflow)
+      else if (!textOf(textarea)) cap = undefined
+    }
+    const limit = cap === undefined ? theirMax : Math.min(theirMax, cap)
+    if (textarea.getMaxHeight().value === limit) return
+    const input = textarea as unknown as { maxHeight: number }
+    input.maxHeight = theirMax
+    context.renderer.requestRender()
+  }
+
+  const fit = () => {
+    try {
+      fitUnsafe()
+    } catch (error) {
+      debug("fit failed", error)
+    }
   }
 
   /**
@@ -273,9 +329,13 @@ export function PromptChrome(props: { context: Context; options: ResolvedOptions
   onMount(() => {
     const timer = setTimeout(sync, 0)
     const poll = setInterval(sync, 150)
+    context.renderer.on("frame", fit)
     onCleanup(() => {
       clearTimeout(timer)
       clearInterval(poll)
+      context.renderer.off("frame", fit)
+      cap = undefined
+      if (textarea && !textarea.isDestroyed && theirMax !== undefined) (textarea as unknown as { maxHeight: number }).maxHeight = theirMax
       for (const node of hidden) if (!node.isDestroyed) node.visible = true
       for (const node of nodes) node.dispose()
     })
